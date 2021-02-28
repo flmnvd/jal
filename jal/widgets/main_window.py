@@ -4,21 +4,21 @@ from functools import partial
 
 from PySide2.QtCore import Qt, Slot, QDateTime, QDir, QLocale
 from PySide2.QtGui import QIcon
-from PySide2.QtWidgets import QMainWindow, QMenu, QMessageBox, QLabel, QActionGroup, QAction
+from PySide2.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QLabel, QActionGroup, QAction
 
 from jal.ui.ui_main_window import Ui_LedgerMainWindow
 from jal.ui.ui_abort_window import Ui_AbortWindow
-from jal.ui_custom.helpers import g_tr, VLine, ManipulateDate, dependency_present
-from jal.ui_custom.table_view_config import TableViewConfig
+from jal.ui_custom.helpers import g_tr, ManipulateDate, dependency_present
+from jal.ui_custom.reference_dialogs import ReferenceDialogs
 from jal.constants import TransactionType
 from jal.db.backup_restore import JalBackup
-from jal.db.helpers import get_dbfilename, get_base_currency, executeSQL
+from jal.db.helpers import get_dbfilename, executeSQL
+from jal.db.settings import JalSettings
 from jal.data_import.downloader import QuoteDownloader
 from jal.db.ledger import Ledger
 from jal.db.balances_model import BalancesModel
 from jal.db.holdings_model import HoldingsModel
 from jal.db.operations_model import OperationsModel
-from jal.widgets.operations import LedgerOperationsView, LedgerInitValues
 from jal.reports.reports import Reports, ReportType
 from jal.data_import.statements import StatementLoader
 from jal.reports.taxes import TaxesRus
@@ -44,12 +44,13 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         QMainWindow.__init__(self, None)
         self.setupUi(self)
 
-        self.db = db
+        self.db = db  # TODO Get rid of any connection storage as we may get it anytime (example is in JalSettings)
         self.own_path = own_path
         self.currentLanguage = language
+        self.current_index = None  # this is used in onOperationContextMenu() to track item for menu
 
         self.ledger = Ledger(self.db)
-        self.downloader = QuoteDownloader(self.db)  # TODO Get rid of 'QSqlDatabasePrivate::removeDatabase: connection 'qt_sql_default_connection' is still in use, all queries will cease to work.' that starts from this line
+        self.downloader = QuoteDownloader(self.db)
         self.downloader.download_completed.connect(self.onQuotesDownloadCompletion)
         self.taxes = TaxesRus(self.db)
         self.statements = StatementLoader(self, self.db)
@@ -80,62 +81,93 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         self.balances_model = BalancesModel(self.BalancesTableView, self.db)
         self.BalancesTableView.setModel(self.balances_model)
         self.balances_model.configureView()
+
         self.holdings_model = HoldingsModel(self.HoldingsTableView, self.db)
         self.HoldingsTableView.setModel(self.holdings_model)
         self.holdings_model.configureView()
         self.HoldingsTableView.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.OperationsTableView.setModel(OperationsModel(self.OperationsTableView, self.db))
-        self.OperationsTableView.model().configureView()
 
-        self.operations = LedgerOperationsView(self.OperationsTableView)
-        self.ui_config = TableViewConfig(self)
+        self.operations_model = OperationsModel(self.OperationsTableView, self.db)
+        self.OperationsTableView.setModel(self.operations_model)
+        self.operations_model.configureView()
+        self.OperationsTableView.setContextMenuPolicy(Qt.CustomContextMenu)
 
-        self.ui_config.configure_all()
-        self.operation_details = {
-            TransactionType.Action: (
-                g_tr('TableViewConfig', "Income / Spending"), self.ui_config.mappers[self.ui_config.ACTIONS], 'actions',
-                self.ActionDetailsTableView, 'action_details', LedgerInitValues[TransactionType.Action]),
-            TransactionType.Trade: (
-                g_tr('TableViewConfig', "Trade"), self.ui_config.mappers[self.ui_config.TRADES], 'trades', None, None,
-                LedgerInitValues[TransactionType.Trade]),
-            TransactionType.Dividend: (
-                g_tr('TableViewConfig', "Dividend"), self.ui_config.mappers[self.ui_config.DIVIDENDS], 'dividends', None, None,
-                LedgerInitValues[TransactionType.Dividend]),
-            TransactionType.Transfer: (
-                g_tr('TableViewConfig', "Transfer"), self.ui_config.mappers[self.ui_config.TRANSFERS], 'transfers', None, None,
-                LedgerInitValues[TransactionType.Transfer]),
-            TransactionType.CorporateAction: (
-                g_tr('TableViewConfig', "Corp. Action"), self.ui_config.mappers[self.ui_config.CORP_ACTIONS], 'corp_actions', None, None,
-                LedgerInitValues[TransactionType.CorporateAction])
-        }
-        self.operations.setOperationsDetails(self.operation_details)
-        self.operations.activateOperationView.connect(self.ShowOperationTab)
-        self.operations.stateIsCommitted.connect(self.showCommitted)
-        self.operations.stateIsModified.connect(self.showModified)
+        self.reference_dialogs = ReferenceDialogs(self)
+        self.connect_signals_and_slots()
+
+        self.NewOperationMenu = QMenu()
+        for i in range(self.OperationsTabs.count()):
+            if hasattr(self.OperationsTabs.widget(i), "isCustom"):
+                self.OperationsTabs.widget(i).init_db(self.db)
+                self.OperationsTabs.widget(i).dbUpdated.connect(self.showCommitted)
+                self.NewOperationMenu.addAction(self.OperationsTabs.widget(i).name,
+                                                partial(self.createOperation, i))
+        self.NewOperationBtn.setMenu(self.NewOperationMenu)
 
         # Setup balance and holdings parameters
         self.BalanceDate.setDateTime(QDateTime.currentDateTime())
-        self.BalancesCurrencyCombo.init_db(self.db, get_base_currency(db))
+        self.BalancesCurrencyCombo.init_db(self.db, JalSettings().getValue('BaseCurrency'))
         self.HoldingsDate.setDateTime(QDateTime.currentDateTime())
-        self.HoldingsCurrencyCombo.init_db(self.db, get_base_currency(db))
+        self.HoldingsCurrencyCombo.init_db(self.db, JalSettings().getValue('BaseCurrency'))
 
         # Create menu for different operations
         self.ChooseAccountBtn.init_db(self.db)
-        self.NewOperationMenu = QMenu()
-        for operation in self.operation_details:
-            self.NewOperationMenu.addAction(self.operation_details[operation][LedgerOperationsView.OP_NAME],
-                                            partial(self.operations.addNewOperation, operation))
-        self.NewOperationBtn.setMenu(self.NewOperationMenu)
 
-        self.ActionDetailsTableView.horizontalHeader().moveSection(self.ActionDetailsTableView.model().fieldIndex("note"),
-                                                                   self.ActionDetailsTableView.model().fieldIndex("name"))
+        # Operations view context menu
+        self.contextMenu = QMenu(self.OperationsTableView)
+        self.actionReconcile = QAction(text=g_tr('MainWindow', "Reconcile"), parent=self)
+        self.actionReconcile.triggered.connect(self.reconcileAtCurrentOperation)
+        self.actionCopy = QAction(text=g_tr('MainWindow', "Copy"), parent=self)
+        self.actionCopy.triggered.connect(self.copyOperation)
+        self.actionDelete = QAction(text=g_tr('MainWindow', "Delete"), parent=self)
+        self.actionDelete.triggered.connect(self.deleteOperation)
+        self.contextMenu.addAction(self.actionReconcile)
+        self.contextMenu.addSeparator()
+        self.contextMenu.addAction(self.actionCopy)
+        self.contextMenu.addAction(self.actionDelete)
 
         self.langGroup = QActionGroup(self.menuLanguage)
         self.createLanguageMenu()
         self.langGroup.triggered.connect(self.onLanguageChanged)
 
-        self.OperationsTableView.selectRow(0)  # TODO find a way to select last row from self.operations
+        self.OperationsTabs.setCurrentIndex(TransactionType.NA)
+        self.OperationsTableView.selectRow(0)
         self.OnOperationsRangeChange(0)
+
+    def connect_signals_and_slots(self):
+        self.actionExit.triggered.connect(QApplication.instance().quit)
+        self.action_Load_quotes.triggered.connect(partial(self.downloader.showQuoteDownloadDialog, self))
+        self.actionImportStatement.triggered.connect(self.statements.loadReport)
+        self.actionImportSlipRU.triggered.connect(self.importSlip)
+        self.actionBackup.triggered.connect(self.backup.create)
+        self.actionRestore.triggered.connect(self.backup.restore)
+        self.action_Re_build_Ledger.triggered.connect(partial(self.ledger.showRebuildDialog, self))
+        self.actionAccountTypes.triggered.connect(partial(self.reference_dialogs.show, "account_types"))
+        self.actionAccounts.triggered.connect(partial(self.reference_dialogs.show, "accounts"))
+        self.actionAssets.triggered.connect(partial(self.reference_dialogs.show, "assets"))
+        self.actionPeers.triggered.connect(partial(self.reference_dialogs.show, "agents_ext"))
+        self.actionCategories.triggered.connect(partial(self.reference_dialogs.show, "categories_ext"))
+        self.actionTags.triggered.connect(partial(self.reference_dialogs.show, "tags"))
+        self.actionCountries.triggered.connect(partial(self.reference_dialogs.show, "countries"))
+        self.actionQuotes.triggered.connect(partial(self.reference_dialogs.show, "quotes"))
+        self.PrepareTaxForms.triggered.connect(partial(self.taxes.showTaxesDialog, self))
+        self.BalanceDate.dateChanged.connect(self.BalancesTableView.model().setDate)
+        self.HoldingsDate.dateChanged.connect(self.HoldingsTableView.model().setDate)
+        self.BalancesCurrencyCombo.changed.connect(self.BalancesTableView.model().setCurrency)
+        self.BalancesTableView.doubleClicked.connect(self.OnBalanceDoubleClick)
+        self.HoldingsCurrencyCombo.changed.connect(self.HoldingsTableView.model().setCurrency)
+        self.ReportRangeCombo.currentIndexChanged.connect(self.onReportRangeChange)
+        self.RunReportBtn.clicked.connect(self.onRunReport)
+        self.SaveReportBtn.clicked.connect(self.reports.saveReport)
+        self.ShowInactiveCheckBox.stateChanged.connect(self.BalancesTableView.model().toggleActive)
+        self.DateRangeCombo.currentIndexChanged.connect(self.OnOperationsRangeChange)
+        self.ChooseAccountBtn.changed.connect(self.OperationsTableView.model().setAccount)
+        self.SearchString.textChanged.connect(self.OperationsTableView.model().filterText)
+        self.HoldingsTableView.customContextMenuRequested.connect(self.onHoldingsContextMenu)
+        self.OperationsTableView.selectionModel().selectionChanged.connect(self.OnOperationChange)
+        self.OperationsTableView.customContextMenuRequested.connect(self.onOperationContextMenu)
+        self.DeleteOperationBtn.clicked.connect(self.deleteOperation)
+        self.CopyOperationBtn.clicked.connect(self.copyOperation)
 
     def closeDatabase(self):
         self.db.close()
@@ -241,28 +273,9 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         self.StatusBar.showMessage(g_tr('MainWindow', "Statement load failed"), timeout=60000)
 
     @Slot()
-    def ShowOperationTab(self, operation_type):
-        tab_list = {
-            TransactionType.NA: 0,
-            TransactionType.Action: 1,
-            TransactionType.Transfer: 4,
-            TransactionType.Trade: 2,
-            TransactionType.Dividend: 3,
-            TransactionType.CorporateAction: 5
-        }
-        self.OperationsTabs.setCurrentIndex(tab_list[operation_type])
-
-    @Slot()
     def showCommitted(self):
         self.ledger.rebuild()
         self.balances_model.update()   # FIXME this should be better linked to some signal emitted by ledger after rebuild completion
-        self.SaveOperationBtn.setEnabled(False)
-        self.RevertOperationBtn.setEnabled(False)
-
-    @Slot()
-    def showModified(self):
-        self.SaveOperationBtn.setEnabled(True)
-        self.RevertOperationBtn.setEnabled(True)
 
     @Slot()
     def importSlip(self):
@@ -286,3 +299,73 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         self.estimator = TaxEstimator(self.db, account, asset, asset_qty, position)
         if self.estimator.ready:
             self.estimator.open()
+
+    @Slot()
+    def OnOperationChange(self, selected, _deselected):
+        self.checkForUncommittedChanges()
+
+        if len(self.OperationsTableView.selectionModel().selectedRows()) != 1:
+            self.OperationsTabs.setCurrentIndex(TransactionType.NA)
+        else:
+            idx = selected.indexes()
+            if idx:
+                selected_row = idx[0].row()
+                operation_type, operation_id = self.OperationsTableView.model().get_operation(selected_row)
+                self.OperationsTabs.setCurrentIndex(operation_type)
+                self.OperationsTabs.widget(operation_type).setId(operation_id)
+
+    @Slot()
+    def checkForUncommittedChanges(self):
+        for i in range(self.OperationsTabs.count()):
+            if hasattr(self.OperationsTabs.widget(i), "isCustom") and self.OperationsTabs.widget(i).modified:
+                reply = QMessageBox().warning(None,
+                                              g_tr('MainWindow', "You have unsaved changes"),
+                                              self.OperationsTabs.widget(i).name +
+                                              g_tr('MainWindow', " has uncommitted changes,\ndo you want to save it?"),
+                                              QMessageBox.Yes, QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    self.OperationsTabs.widget(i).saveChanges()
+                else:
+                    self.OperationsTabs.widget(i).revertChanges()
+
+    @Slot()
+    def onOperationContextMenu(self, pos):
+        self.current_index = self.OperationsTableView.indexAt(pos)
+        if len(self.OperationsTableView.selectionModel().selectedRows()) != 1:
+            self.actionReconcile.setEnabled(False)
+            self.actionCopy.setEnabled(False)
+        else:
+            self.actionReconcile.setEnabled(True)
+            self.actionCopy.setEnabled(True)
+        self.contextMenu.popup(self.OperationsTableView.viewport().mapToGlobal(pos))
+
+    @Slot()
+    def reconcileAtCurrentOperation(self):
+        self.operations_model.reconcile_operation(self.current_index.row())
+
+    @Slot()
+    def deleteOperation(self):
+        if QMessageBox().warning(None, g_tr('MainWindow', "Confirmation"),
+                                 g_tr('MainWindow', "Are you sure to delete selected transacion(s)?"),
+                                 QMessageBox.Yes, QMessageBox.No) == QMessageBox.No:
+            return
+        rows = []
+        for index in self.OperationsTableView.selectionModel().selectedRows():
+            rows.append(index.row())
+        self.operations_model.deleteRows(rows)
+        self.ledger.rebuild()
+        self.balances_model.update()  # FIXME this should be better linked to some signal emitted by ledger after rebuild completion
+
+    @Slot()
+    def createOperation(self, operation_type):
+        self.checkForUncommittedChanges()
+        self.OperationsTabs.widget(operation_type).createNew(account_id=self.operations_model.getAccount())
+        self.OperationsTabs.setCurrentIndex(operation_type)
+
+    @Slot()
+    def copyOperation(self):
+        operation_type = self.OperationsTabs.currentIndex()
+        if operation_type == TransactionType.NA:
+            return
+        self.checkForUncommittedChanges()
+        self.OperationsTabs.widget(operation_type).copyNew()

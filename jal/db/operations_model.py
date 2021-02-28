@@ -4,7 +4,7 @@ from PySide2.QtCore import Qt, Slot, QAbstractTableModel, QDate
 from PySide2.QtSql import QSqlQuery
 from PySide2.QtGui import QBrush, QFont
 from PySide2.QtWidgets import QStyledItemDelegate, QHeaderView
-from jal.constants import CustomColor, TransactionType, TransferSubtype, CorporateAction
+from jal.constants import CustomColor, TransactionType, TransferSubtype, DividendSubtype, CorporateAction
 from jal.ui_custom.helpers import g_tr
 from jal.db.helpers import readSQL, readSQLrecord, executeSQL
 
@@ -18,11 +18,19 @@ class OperationsModel(QAbstractTableModel):
                 g_tr('OperationsModel', "Amount"),
                 g_tr('OperationsModel', "Balance"),
                 g_tr('OperationsModel', "Currency")]
+    _tables = {
+        TransactionType.Action: "actions",
+        TransactionType.Dividend: "dividends",
+        TransactionType.Trade: "trades",
+        TransactionType.Transfer: "transfers",
+        TransactionType.CorporateAction: "corp_actions"
+    }
 
     OperationSign = {
         (TransactionType.Action, -1): ('—', CustomColor.DarkRed),
         (TransactionType.Action, +1): ('+', CustomColor.DarkGreen),
-        (TransactionType.Dividend, 0): ('Δ', CustomColor.DarkGreen),
+        (TransactionType.Dividend, DividendSubtype.Dividend): ('Δ', CustomColor.DarkGreen),
+        (TransactionType.Dividend, DividendSubtype.BondInterest): ('%', CustomColor.DarkGreen),
         (TransactionType.Trade, -1): ('S', CustomColor.DarkRed),
         (TransactionType.Trade, +1): ('B', CustomColor.DarkGreen),
         (TransactionType.Transfer, TransferSubtype.Outgoing): ('<', CustomColor.DarkBlue),
@@ -246,6 +254,9 @@ class OperationsModel(QAbstractTableModel):
             self._account = account_id
             self.prepareData()
 
+    def getAccount(self):
+        return self._account
+
     @Slot()
     def setDateRange(self, start, end=0):
         self._begin = start
@@ -291,6 +302,15 @@ class OperationsModel(QAbstractTableModel):
             self._query.prepare(query_pfx + query_suffix)
             self._query.exec_()
         self.modelReset.emit()
+
+    def deleteRows(self, rows):
+        for row in rows:
+            if self._query.seek(row):
+                data = readSQLrecord(self._query, named=True)
+                table_name = self._tables[data['type']]
+                query = f"DELETE FROM {table_name} WHERE id={data['id']}"
+                _ = executeSQL(self._db, query)
+        self.prepareData()
 
 
 class ColoredAmountsDelegate(QStyledItemDelegate):

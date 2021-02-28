@@ -2,10 +2,11 @@ from PySide2.QtGui import QColor
 
 class Setup:
     DB_PATH = "jal.sqlite"
+    DB_CONNECTION = "JAL.DB"
     INIT_SCRIPT_PATH = 'jal_init.sql'
     UPDATES_PATH = 'updates'
     UPDATE_PREFIX = 'jal_delta_'
-    TARGET_SCHEMA = 15
+    TARGET_SCHEMA = 17
     CALC_TOLERANCE = 1e-10
     DISP_TOLERANCE = 1e-4
 
@@ -24,7 +25,7 @@ class BookAccount:  # PREDEFINED BOOK ACCOUNTS
     Transfers = 6
 
 
-class TransactionType:   # PREDEFINED TRANSACTION TYPES
+class TransactionType:   # PREDEFINED TRANSACTION TYPES - these are aligned with tabs in main window
     NA = 0
     Action = 1
     Dividend = 2
@@ -42,6 +43,12 @@ class TransferSubtype:   # TRANSFER SUB-TYPES
     Fee = 0
     Outgoing = -1
     Incoming = 1
+
+
+class DividendSubtype:   # Subtype to distinguish dividend, bond interest etc.
+    Fee = 0
+    Dividend = 1
+    BondInterest = 2
 
 
 class CorporateAction:   # CORPORATE ACTIONS FOR ASSETS

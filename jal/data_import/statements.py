@@ -10,7 +10,7 @@ from lxml import etree
 from PySide2.QtCore import QObject, Signal, Slot, QSettings
 from PySide2.QtSql import QSqlTableModel
 from PySide2.QtWidgets import QDialog, QFileDialog, QMessageBox
-from jal.constants import Setup, TransactionType, PredefinedAsset, PredefinedCategory, CorporateAction
+from jal.constants import Setup, TransactionType, PredefinedAsset, PredefinedCategory, CorporateAction, DividendSubtype
 from jal.db.helpers import executeSQL, readSQL, get_country_by_code, account_last_date, update_asset_country
 from jal.ui_custom.helpers import g_tr
 from jal.ui.ui_add_asset_dlg import Ui_AddAssetDialog
@@ -29,10 +29,12 @@ class IBKRCashOp:
     DepositWithdrawal = 2
     Fee = 3
     Interest = 4
+    BondInterest = 5
 
 
 # -----------------------------------------------------------------------------------------------------------------------
 class IBKR:
+    BondPricipal = 1000
     CancelledFlag = 'Ca'
     TaxNotePattern = "^(.*) - (..) TAX$"
     MergerPattern = "^(?P<symbol_old>\w+)\((?P<isin_old>\w+)\) +MERGED\(\w+\) +WITH +(?P<isin_new>\w+) +(?P<X>\d+) +FOR +(?P<Y>\d+) +\((?P<symbol>\w+), (?P<name>.*), (?P<id>\w+)\)$"
@@ -120,6 +122,8 @@ class IBKR:
         operations = {
             'Dividends':                    IBKRCashOp.Dividend,
             'Payment In Lieu Of Dividends': IBKRCashOp.Dividend,
+            'Bond Interest Paid':           IBKRCashOp.BondInterest,
+            'Bond Interest Received':       IBKRCashOp.BondInterest,
             'Withholding Tax':              IBKRCashOp.TaxWithhold,
             'Deposits/Withdrawals':         IBKRCashOp.DepositWithdrawal,
             'Other Fees':                   IBKRCashOp.Fee,
@@ -443,58 +447,70 @@ class StatementLoader(QObject):
     def getIBdata(self, section):
         section_descriptions = {
             'SecuritiesInfo': {'tag': 'SecurityInfo',
+                               'level': '',
                                'values': [('symbol', IBKR.flString, None),
                                           ('assetCategory', IBKR.flAssetType, None),
                                           ('subCategory', IBKR.flString, ''),
                                           ('description', IBKR.flString, None),
                                           ('isin', IBKR.flString, '')]},
-            'Trades': {'tag': 'Trade', 'values': [('assetCategory', IBKR.flAssetType, None),
-                                                  ('symbol', IBKR.flAsset, None),
-                                                  ('accountId', IBKR.flAccount, None),
-                                                  ('dateTime', IBKR.flTimestamp, None),
-                                                  ('settleDateTarget', IBKR.flTimestamp, 0),
-                                                  ('tradePrice', IBKR.flNumber, None),
-                                                  ('quantity', IBKR.flNumber, None),
-                                                  ('proceeds', IBKR.flNumber, None),
-                                                  ('multiplier', IBKR.flNumber, None),
-                                                  ('ibCommission', IBKR.flNumber, None),
-                                                  ('tradeID', IBKR.flString, ''),
-                                                  ('exchange', IBKR.flString, ''),
-                                                  ('notes', IBKR.flString, '')]},
-            'OptionEAE': {'tag': 'OptionEAE', 'values': [('transactionType', IBKR.flString, None),
-                                                         ('symbol', IBKR.flAsset, None),
-                                                         ('accountId', IBKR.flAccount, None),
-                                                         ('date', IBKR.flTimestamp, None),
-                                                         ('tradePrice', IBKR.flNumber, None),
-                                                         ('quantity', IBKR.flNumber, None),
-                                                         ('multiplier', IBKR.flNumber, None),
-                                                         ('commisionsAndTax', IBKR.flNumber, None),
-                                                         ('tradeID', IBKR.flString, ''),
-                                                         ('notes', IBKR.flString, '')]},
-            'CorporateActions': {'tag': 'CorporateAction', 'values': [('type', IBKR.flCorpActionType, None),
-                                                                      ('accountId', IBKR.flAccount, None),
-                                                                      ('symbol', IBKR.flAsset, None),
-                                                                      ('isin', IBKR.flString, ''),
-                                                                      ('listingExchange', IBKR.flString, ''),
-                                                                      ('assetCategory', IBKR.flAssetType, None),
-                                                                      ('dateTime', IBKR.flTimestamp, None),
-                                                                      ('transactionID', IBKR.flString, ''),
-                                                                      ('description', IBKR.flString, None),
-                                                                      ('quantity', IBKR.flNumber, None),
-                                                                      ('code', IBKR.flString, '')]},
-            'CashTransactions': {'tag': 'CashTransaction', 'values': [('type', IBKR.flCashOpType, None),
-                                                                      ('accountId', IBKR.flAccount, None),
-                                                                      ('currency', IBKR.flString, ''),
-                                                                      ('symbol', IBKR.flAsset, 0),
-                                                                      ('dateTime', IBKR.flTimestamp, None),
-                                                                      ('amount', IBKR.flNumber, None),
-                                                                      ('description', IBKR.flString, None)]},
-            'TransactionTaxes': {'tag': 'TransactionTax', 'values': [('accountId', IBKR.flAccount, None),
-                                                                     ('symbol', IBKR.flString, ''),
-                                                                     ('date', IBKR.flTimestamp, None),
-                                                                     ('taxAmount', IBKR.flNumber, None),
-                                                                     ('description', IBKR.flString, None),
-                                                                     ('taxDescription', IBKR.flString, None)]}
+            'Trades': {'tag': 'Trade',
+                       'level': 'EXECUTION',
+                       'values': [('assetCategory', IBKR.flAssetType, None),
+                                  ('symbol', IBKR.flAsset, None),
+                                  ('accountId', IBKR.flAccount, None),
+                                  ('dateTime', IBKR.flTimestamp, None),
+                                  ('settleDateTarget', IBKR.flTimestamp, 0),
+                                  ('tradePrice', IBKR.flNumber, None),
+                                  ('quantity', IBKR.flNumber, None),
+                                  ('proceeds', IBKR.flNumber, None),
+                                  ('multiplier', IBKR.flNumber, None),
+                                  ('ibCommission', IBKR.flNumber, None),
+                                  ('tradeID', IBKR.flString, ''),
+                                  ('exchange', IBKR.flString, ''),
+                                  ('notes', IBKR.flString, '')]},
+            'OptionEAE': {'tag': 'OptionEAE',
+                          'level': '',
+                          'values': [('transactionType', IBKR.flString, None),
+                                     ('symbol', IBKR.flAsset, None),
+                                     ('accountId', IBKR.flAccount, None),
+                                     ('date', IBKR.flTimestamp, None),
+                                     ('tradePrice', IBKR.flNumber, None),
+                                     ('quantity', IBKR.flNumber, None),
+                                     ('multiplier', IBKR.flNumber, None),
+                                     ('commisionsAndTax', IBKR.flNumber, None),
+                                     ('tradeID', IBKR.flString, ''),
+                                     ('notes', IBKR.flString, '')]},
+            'CorporateActions': {'tag': 'CorporateAction',
+                                 'level': 'DETAIL',
+                                 'values': [('type', IBKR.flCorpActionType, None),
+                                            ('accountId', IBKR.flAccount, None),
+                                            ('symbol', IBKR.flAsset, None),
+                                            ('isin', IBKR.flString, ''),
+                                            ('listingExchange', IBKR.flString, ''),
+                                            ('assetCategory', IBKR.flAssetType, None),
+                                            ('dateTime', IBKR.flTimestamp, None),
+                                            ('transactionID', IBKR.flString, ''),
+                                            ('description', IBKR.flString, None),
+                                            ('quantity', IBKR.flNumber, None),
+                                            ('code', IBKR.flString, '')]},
+            'CashTransactions': {'tag': 'CashTransaction',
+                                 'level': 'DETAIL',
+                                 'values': [('type', IBKR.flCashOpType, None),
+                                            ('accountId', IBKR.flAccount, None),
+                                            ('currency', IBKR.flString, ''),
+                                            ('symbol', IBKR.flAsset, 0),
+                                            ('dateTime', IBKR.flTimestamp, None),
+                                            ('amount', IBKR.flNumber, None),
+                                            ('tradeID', IBKR.flString, ''),
+                                            ('description', IBKR.flString, None)]},
+            'TransactionTaxes': {'tag': 'TransactionTax',
+                                 'level': '',
+                                 'values': [('accountId', IBKR.flAccount, None),
+                                            ('symbol', IBKR.flString, ''),
+                                            ('date', IBKR.flTimestamp, None),
+                                            ('taxAmount', IBKR.flNumber, None),
+                                            ('description', IBKR.flString, None),
+                                            ('taxDescription', IBKR.flString, None)]}
         }
 
         try:
@@ -505,6 +521,9 @@ class StatementLoader(QObject):
         data = []
         for sample in section.xpath(tag):
             tag_dictionary = {}
+            if section_descriptions[section.tag]['level']:  # Skip extra lines (SUMMARY, etc)
+                if IBKR.flString(sample, 'levelOfDetail', '', self) != section_descriptions[section.tag]['level']:
+                    continue
             for attr_name, attr_loader, attr_default in section_descriptions[section.tag]['values']:
                 attr_value = attr_loader(sample, attr_name, attr_default, self)
                 if attr_value is None:
@@ -529,6 +548,7 @@ class StatementLoader(QObject):
     def loadIBTrades(self, trades):
         ib_trade_loaders = {
             PredefinedAsset.Stock: self.loadIBStockTrade,
+            PredefinedAsset.Bond: self.loadIBBondTrade,
             PredefinedAsset.Derivative: self.loadIBStockTrade,
             PredefinedAsset.Bond: self.loadIBStockTrade,
             PredefinedAsset.Money: self.loadIBCurrencyTrade
@@ -536,10 +556,11 @@ class StatementLoader(QObject):
 
         cnt = 0
         for trade in trades:
-            _ = self.getAccountBank(trade[
-                                        'accountId'])  # This line simply checks that bank is present for IB account (in order to process fees)
-
-            cnt += ib_trade_loaders[trade['assetCategory']](trade)
+            _ = self.getAccountBank(trade['accountId'])  # Checks that bank is present (in order to process fees)
+            try:
+                cnt += ib_trade_loaders[trade['assetCategory']](trade)
+            except KeyError:
+                logging.error(g_tr('StatementLoader', "Asset type isn't supported for trade: ") + f"{trade})")
         logging.info(g_tr('StatementLoader', "Trades loaded: ") + f"{cnt} ({len(trades)})")
 
     def loadIBCorporateActions(self, actions):
@@ -748,6 +769,10 @@ class StatementLoader(QObject):
         for dividend in dividends:
             cnt += self.loadIBDividend(dividend)
 
+        bond_interests = list(filter(lambda tr: tr['type'] == IBKRCashOp.BondInterest, cash))
+        for bond_interest in bond_interests:
+            cnt += self.loadIBBondInterest(bond_interest)
+
         taxes = list(filter(lambda tr: tr['type'] == IBKRCashOp.TaxWithhold, cash))
         for tax in taxes:
             cnt += self.loadIBWithholdingTax(tax)
@@ -778,7 +803,20 @@ class StatementLoader(QObject):
                              trade['tradeID'], qty, trade['tradePrice'], trade['ibCommission'])
         return 1
 
-    def createTrade(self, account_id, asset_id, timestamp, settlement, number, qty, price, fee, coupon=0.0):
+    def loadIBBondTrade(self, trade):
+        qty = trade['quantity'] / IBKR.BondPricipal
+        price = trade['tradePrice'] * IBKR.BondPricipal / 100.0   # Bonds are priced in percents of principal
+        if trade['settleDateTarget'] == 0:
+            trade['settleDateTarget'] = trade['dateTime']
+        if trade['notes'] == IBKR.CancelledFlag:
+            self.deleteTrade(trade['accountId'], trade['symbol'], trade['dateTime'], trade['settleDateTarget'],
+                             trade['tradeID'], qty, price, trade['ibCommission'])
+        else:
+            self.createTrade(trade['accountId'], trade['symbol'], trade['dateTime'], trade['settleDateTarget'],
+                             trade['tradeID'], qty, price, trade['ibCommission'])
+        return 1
+
+    def createTrade(self, account_id, asset_id, timestamp, settlement, number, qty, price, fee):
         trade_id = readSQL(self.db,
                            "SELECT id FROM trades "
                            "WHERE timestamp=:timestamp AND asset_id = :asset "
@@ -790,12 +828,11 @@ class StatementLoader(QObject):
             return
 
         _ = executeSQL(self.db,
-                       "INSERT INTO trades (timestamp, settlement, number, account_id, "
-                       "asset_id, qty, price, fee, coupon) "
-                       "VALUES (:timestamp, :settlement, :number, :account, :asset, :qty, :price, :fee, :coupon)",
+                       "INSERT INTO trades (timestamp, settlement, number, account_id, asset_id, qty, price, fee) "
+                       "VALUES (:timestamp, :settlement, :number, :account, :asset, :qty, :price, :fee)",
                        [(":timestamp", timestamp), (":settlement", settlement), (":number", number),
                         (":account", account_id), (":asset", asset_id), (":qty", float(qty)),
-                        (":price", float(price)), (":fee", -float(fee)), (":coupon", float(coupon))])
+                        (":price", float(price)), (":fee", -float(fee))])
         self.db.commit()
 
     def deleteTrade(self, account_id, asset_id, timestamp, _settlement, number, qty, price, _fee):
@@ -876,8 +913,13 @@ class StatementLoader(QObject):
         self.db.commit()
 
     def loadIBDividend(self, dividend):
-        self.createDividend(dividend['dateTime'], dividend['accountId'], dividend['symbol'], dividend['amount'],
-                            dividend['description'])
+        self.createDividend(DividendSubtype.Dividend, dividend['dateTime'], dividend['accountId'], dividend['symbol'],
+                            dividend['amount'], dividend['description'])
+        return 1
+
+    def loadIBBondInterest(self, interest):
+        self.createDividend(DividendSubtype.BondInterest, interest['dateTime'], interest['accountId'], interest['symbol'],
+                            interest['amount'], interest['description'], interest['tradeID'])
         return 1
 
     def loadIBWithholdingTax(self, tax):
@@ -935,17 +977,17 @@ class StatementLoader(QObject):
                                 dialog.account_id, -cash['amount'], 0, 0, cash['description'])
         return 1
 
-    def createDividend(self, timestamp, account_id, asset_id, amount, note):
+    def createDividend(self, subtype, timestamp, account_id, asset_id, amount, note, trade_number=''):
         id = readSQL(self.db, "SELECT id FROM dividends WHERE timestamp=:timestamp "
                               "AND account_id=:account_id AND asset_id=:asset_id AND note=:note",
                      [(":timestamp", timestamp), (":account_id", account_id), (":asset_id", asset_id), (":note", note)])
         if id:
             logging.info(g_tr('StatementLoader', "Dividend already exists: ") + f"{note}")
             return
-        _ = executeSQL(self.db, "INSERT INTO dividends (timestamp, account_id, asset_id, sum, note) "
-                                "VALUES (:timestamp, :account_id, :asset_id, :sum, :note)",
-                       [(":timestamp", timestamp), (":account_id", account_id), (":asset_id", asset_id),
-                        (":sum", amount), (":note", note)])
+        _ = executeSQL(self.db, "INSERT INTO dividends (timestamp, number, type, account_id, asset_id, amount, note) "
+                                "VALUES (:timestamp, :number, :subtype, :account_id, :asset_id, :amount, :note)",
+                       [(":timestamp", timestamp), (":number", trade_number), (":subtype", subtype),
+                        (":account_id", account_id), (":asset_id", asset_id), (":amount", amount), (":note", note)])
         self.db.commit()
 
     def addWithholdingTax(self, timestamp, account_id, asset_id, amount, note):
@@ -960,7 +1002,7 @@ class StatementLoader(QObject):
         update_asset_country(self.db, asset_id, country_id)
         try:
             dividend_id, old_tax = readSQL(self.db,
-                                           "SELECT id, sum_tax FROM dividends "
+                                           "SELECT id, tax FROM dividends "
                                            "WHERE timestamp=:timestamp AND account_id=:account_id "
                                            "AND asset_id=:asset_id AND note LIKE :dividend_description",
                                            [(":timestamp", timestamp), (":account_id", account_id),
@@ -968,7 +1010,7 @@ class StatementLoader(QObject):
         except:
             logging.warning(g_tr('StatementLoader', "Dividend not found for withholding tax: ") + f"{note}")
             return
-        _ = executeSQL(self.db, "UPDATE dividends SET sum_tax=:tax WHERE id=:dividend_id",
+        _ = executeSQL(self.db, "UPDATE dividends SET tax=:tax WHERE id=:dividend_id",
                        [(":dividend_id", dividend_id), (":tax", old_tax + amount)])
         self.db.commit()
 
@@ -1022,6 +1064,7 @@ class StatementLoader(QObject):
                 fee = fee + float(row[Quik.FeeEx])
             else:
                 fee = fee + float(row[Quik.FeeEx1]) + float(row[Quik.FeeEx2]) + float(row[Quik.FeeEx3])
-            coupon = float(row[Quik.Coupon])
-            self.createTrade(account_id, asset_id, timestamp, settlement, number, qty, price, -fee, coupon)
+            # FIXME paid/received bond interest should be recorded as separate transaction in table 'dividends'
+            bond_interest = float(row[Quik.Coupon])
+            self.createTrade(account_id, asset_id, timestamp, settlement, number, qty, price, -fee)
         return True
