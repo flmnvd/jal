@@ -657,3 +657,5 @@ class Ui_LedgerMainWindow(object):
         self.menuImport.setTitle(QCoreApplication.translate("LedgerMainWindow", u"&Import", None))
     # retranslateUi
 
+    def activateLoggingTab(self):
+        self.MainTabs.setCurrentIndex(self.MainTabs.indexOf(self.LoggingTab))

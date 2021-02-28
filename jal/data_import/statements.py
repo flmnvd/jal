@@ -1,17 +1,17 @@
 import logging
 import math
 import re
-import os
 from datetime import datetime, timezone
 from itertools import groupby
 
 import pandas
 from lxml import etree
-from PySide2.QtCore import QObject, Signal, Slot, QSettings
+from PySide2.QtCore import QObject, Signal, Slot
 from PySide2.QtSql import QSqlTableModel
 from PySide2.QtWidgets import QDialog, QFileDialog, QMessageBox
 from jal.constants import Setup, TransactionType, PredefinedAsset, PredefinedCategory, CorporateAction, DividendSubtype
 from jal.db.helpers import executeSQL, readSQL, get_country_by_code, account_last_date, update_asset_country
+from jal.ui_custom import account_select
 from jal.ui_custom.helpers import g_tr
 from jal.ui.ui_add_asset_dlg import Ui_AddAssetDialog
 from jal.ui.ui_select_account_dlg import Ui_SelectAccountDlg
@@ -21,6 +21,7 @@ from jal.ui.ui_select_account_dlg import Ui_SelectAccountDlg
 class ReportType:
     IBKR = 'IBKR flex-query (*.xml)'
     Quik = 'Quik HTML-report (*.htm)'
+    FFin = 'Freedom Finance (*.xls)'
 
 
 class IBKRCashOp:
@@ -129,9 +130,7 @@ class IBKR:
             'Other Fees':                   IBKRCashOp.Fee,
             'Commission Adjustments':       IBKRCashOp.Fee,
             'Broker Interest Paid':         IBKRCashOp.Fee,
-            'Broker Interest Received':     IBKRCashOp.Interest,
-            'Bond Interest Paid':           IBKRCashOp.Dividend,
-            'Bond Interest Received':       IBKRCashOp.Dividend,
+            'Broker Interest Received':     IBKRCashOp.Interest
         }
 
         if name not in data.attrib:
@@ -212,16 +211,45 @@ class Quik:
     Total = 'ИТОГО'
 
 
+class FFin:
+    Account = 'Номер счета'
+    Symbol = 'Тиккер'
+    #Type = 'Вид'
+    Price = 'Цена'
+    Qty = 'Кол-во'
+    Fee = 'Ком.брок'
+    FeeEx = 'Ком.бир'
+    Description = 'Примечание'
+    DateTime = 'Время'
+    Buy = 'Купля'
+    Sell = 'Продажа'
+
 # -----------------------------------------------------------------------------------------------------------------------
-# Strip white spaces from numbers imported form Quik html-report
+# Strip white spaces from numbers imported form Quik html-report. Strip new line symbols and tabulations.
+# Replace comma (Russian style fraction delimiter) by dot.
 def convert_amount(val):
-    val = val.replace(' ', '')
+    val = val.strip().replace(' ', '').replace(',', '.')
     try:
         res = float(val)
     except ValueError:
         res = 0
     return res
 
+
+def convert_ffin_date(val):
+    try:
+        if type(val) is str:
+            time_str = re.sub('\s+', ' ', val.strip())
+            #if '-' in time_str:  # YYYY-MM-DD
+            #    return int(datetime.strptime(time_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+            if '.' in time_str:  #and len(time_str)==10:  # DD.MM.YYYY
+                return int(datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+        elif type(val) is datetime:
+            return int(val.replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        pass
+    logging.error(g_tr('StatementLoader', "Unsupported date/time format: ") + f"{val}")
+    return None
 
 def addNewAsset(db, symbol, name, asset_type, isin, data_source=-1):
     if symbol.endswith('.OLD'):
@@ -323,24 +351,19 @@ class StatementLoader(QObject):
         self.db = db
         self.loaders = {
             ReportType.IBKR: self.loadIBFlex,
-            ReportType.Quik: self.loadQuikHtml
+            ReportType.Quik: self.loadQuikHtml,
+            ReportType.FFin: self.loadFFin
         }
         self.currentIBstatement = None
         self.last_selected_account = None
 
     # Displays file choose dialog and loads corresponding report if user have chosen a file
     def loadReport(self):
-        lastdir = QSettings().value("LastReportDir", ".")
-        report_files, active_filter = \
-            QFileDialog.getOpenFileNames(None, g_tr('StatementLoader', "Select statement file to import"),
-                                         lastdir, f"{ReportType.IBKR};;{ReportType.Quik}")
-
-        if report_files:
-            QSettings().setValue("LastReportDir", os.path.dirname(report_files[0]))
-            for report_file in report_files:
-                result = self.loaders[active_filter](report_file)
-                if not result:
-                    break
+        report_file, active_filter = \
+            QFileDialog.getOpenFileName(None, g_tr('StatementLoader', "Select statement file to import"),
+                                        ".", f"{ReportType.IBKR};;{ReportType.Quik};;{ReportType.FFin}")
+        if report_file:
+            result = self.loaders[active_filter](report_file)
             if result:
                 self.load_completed.emit()
             else:
@@ -550,7 +573,6 @@ class StatementLoader(QObject):
             PredefinedAsset.Stock: self.loadIBStockTrade,
             PredefinedAsset.Bond: self.loadIBBondTrade,
             PredefinedAsset.Derivative: self.loadIBStockTrade,
-            PredefinedAsset.Bond: self.loadIBStockTrade,
             PredefinedAsset.Money: self.loadIBCurrencyTrade
         }
 
@@ -964,17 +986,25 @@ class StatementLoader(QObject):
                    f"@{datetime.utcfromtimestamp(cash['dateTime']).strftime('%d.%m.%Y')}\n" + \
                    g_tr('StatementLoader', "Select account to deposit to:")
 
+        """
         dialog = SelectAccountDialog(self.parent, self.db, text, cash['accountId'],
                                      recent_account=self.last_selected_account)
         if dialog.exec_() != QDialog.Accepted:
             return 0
         self.last_selected_account = dialog.account_id
+        account_id = dialog.account_id
+        """
+
+        account_id = readSQL(self.db, 'SELECT id FROM accounts WHERE type_id=2 AND currency_id \
+                                              IN(SELECT id FROM assets WHERE type_id=1 AND name=:curr_name)',
+                                    [(":curr_name", cash['currency'])])
+
         if cash['amount'] >= 0:
-            self.createTransfer(cash['dateTime'], dialog.account_id, cash['amount'],
+            self.createTransfer(cash['dateTime'], account_id, cash['amount'],
                                 cash['accountId'], cash['amount'], 0, 0, cash['description'])
         else:
             self.createTransfer(cash['dateTime'], cash['accountId'], -cash['amount'],
-                                dialog.account_id, -cash['amount'], 0, 0, cash['description'])
+                                account_id, -cash['amount'], 0, 0, cash['description'])
         return 1
 
     def createDividend(self, subtype, timestamp, account_id, asset_id, amount, note, trade_number=''):
@@ -1068,3 +1098,54 @@ class StatementLoader(QObject):
             bond_interest = float(row[Quik.Coupon])
             self.createTrade(account_id, asset_id, timestamp, settlement, number, qty, price, -fee)
         return True
+
+
+    def loadFFinTrades(self, filename):
+        try:
+            data = pandas.read_excel(filename, sheet_name="trades", dtype={FFin.Account: str},
+                                     converters={FFin.DateTime: convert_ffin_date})
+                                         #converters={FFin.Qty: convert_amount, FFin.Price: convert_amount,
+                                          #           FFin.Fee: convert_amount, FFin.FeeEx: convert_amount,})
+            data = data.dropna()
+            with pandas.option_context('display.max_rows', None, 'display.max_columns', None):
+                print(data)
+        except:
+            logging.error(g_tr('StatementLoader', "Can't read statement file"))
+            return False
+
+        for index, row in data.iterrows():
+            try:
+                account_num = row[FFin.Account]
+            except KeyError:
+                logging.error(g_tr('StatementLoader', "Can't get account number from the statement."))
+                return False
+
+            account_id = self.findAccountID(account_num)
+            if account_id is None:
+                logging.error(g_tr('StatementLoader', "Account with number ") + f"{account_num}" +
+                              g_tr('StatementLoader', " not found. Import cancelled."))
+                return False
+
+            qty = float(row[FFin.Qty])
+            symbol = row[FFin.Symbol]
+            asset_id = self.findAssetID(symbol, dialog_new=False)
+            if asset_id is None:
+                asset_type = PredefinedAsset.Derivative if symbol.endswith("_FWD") else PredefinedAsset.Stock
+                try:
+                    asset_id = addNewAsset(self.db, symbol, row[FFin.Description], asset_type, None, data_source=-1)
+                except:
+                    logging.warning(g_tr('StatementLoader', "Unknown asset ") + f"'{symbol}'")
+                    continue
+            timestamp = row[FFin.DateTime]
+            settlement = timestamp
+            number = timestamp
+            price = row[FFin.Price]
+            #amount = row[FFin.Amount]
+            #lot_size = math.pow(10, round(math.log10(amount / (price * abs(qty)))))
+            #qty = qty * lot_size
+            fee = float(row[FFin.Fee]) + abs(float(row[FFin.FeeEx]))  # TODO: Why negative fee?
+            self.createTrade(account_id, asset_id, timestamp, settlement, number, qty, price, -fee)
+        return True
+
+    def loadFFin(self, filename):
+        return self.loadFFinTrades(filename)

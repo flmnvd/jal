@@ -514,17 +514,19 @@ class Ledger:
 
         if from_timestamp >= 0:
             frontier = from_timestamp
-            silent = False
+            #silent = False
         else:
             frontier = self.getCurrentFrontier()
             operations_count = readSQL(self.db, "SELECT COUNT(id) FROM all_transactions WHERE timestamp >= :frontier",
                                [(":frontier", frontier)])
             if operations_count > self.SILENT_REBUILD_THRESHOLD:
+                """
                 silent = False
                 if QMessageBox().warning(None, g_tr('Ledger', "Confirmation"), f"{operations_count}" +
                                          g_tr('Ledger', " operations require rebuild. Do you want to do it right now?"),
                                          QMessageBox.Yes, QMessageBox.No) == QMessageBox.No:
                     return
+                """
         if not silent:
             logging.info(g_tr('Ledger', "Re-build ledger from: ") +
                          f"{datetime.utcfromtimestamp(frontier).strftime('%d/%m/%Y %H:%M:%S')}")
