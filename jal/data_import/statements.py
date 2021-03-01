@@ -12,7 +12,7 @@ from PySide2.QtSql import QSqlTableModel
 from PySide2.QtWidgets import QDialog, QFileDialog, QMessageBox
 from jal.constants import Setup, TransactionType, PredefinedAsset, PredefinedCategory, CorporateAction, DividendSubtype
 from jal.db.helpers import executeSQL, readSQL, get_country_by_code, account_last_date, update_asset_country
-from jal.ui_custom.helpers import g_tr
+from jal.ui_custom.helpers import g_tr, ManipulateDate
 from jal.ui.ui_add_asset_dlg import Ui_AddAssetDialog
 from jal.ui.ui_select_account_dlg import Ui_SelectAccountDlg
 
@@ -383,9 +383,16 @@ class StatementLoader(QObject):
                             g_tr('StatementLoader', "Symbol updated for ISIN ") + f"{isin}: {db_symbol} -> {symbol}")
                 return asset_id
         asset_id = readSQL(self.db, "SELECT id FROM assets WHERE name=:symbol", [(":symbol", symbol)])
-        if not dialog_new:
-            return asset_id
-        if asset_id is None:
+        if asset_id is not None:
+            # Check why symbol was not found by ISIN
+            db_isin = readSQL(self.db, "SELECT isin FROM assets WHERE id=:asset_id", [(":asset_id", asset_id)])
+            if db_isin == '':  # Update ISIN if it was absent in DB
+                _ = executeSQL(self.db, "UPDATE assets SET isin=:isin WHERE id=:asset_id",
+                               [(":isin", isin), (":asset_id", asset_id)])
+                logging.info(g_tr('StatementLoader', "ISIN updated for ") + f"{symbol}: {isin}")
+            else:
+                logging.warning(g_tr('StatementLoader', "ISIN mismatch for ") + f"{symbol}: {isin} != {db_isin}")
+        elif dialog_new:
             dialog = AddAssetDialog(self.parent, self.db, symbol)
             dialog.exec_()
             asset_id = dialog.asset_id
@@ -1000,19 +1007,37 @@ class StatementLoader(QObject):
         country_code = parts.group(2).lower()
         country_id = get_country_by_code(self.db, country_code)
         update_asset_country(self.db, asset_id, country_id)
-        try:
-            dividend_id, old_tax = readSQL(self.db,
-                                           "SELECT id, tax FROM dividends "
-                                           "WHERE timestamp=:timestamp AND account_id=:account_id "
-                                           "AND asset_id=:asset_id AND note LIKE :dividend_description",
-                                           [(":timestamp", timestamp), (":account_id", account_id),
-                                            (":asset_id", asset_id), (":dividend_description", dividend_note)])
-        except:
+        dividend_id = self.findDividend4Tax(timestamp, account_id, asset_id, dividend_note)
+        if dividend_id is None:
             logging.warning(g_tr('StatementLoader', "Dividend not found for withholding tax: ") + f"{note}")
             return
+        old_tax = readSQL(self.db, "SELECT tax FROM dividends WHERE id=:id", [(":id", dividend_id)])
         _ = executeSQL(self.db, "UPDATE dividends SET tax=:tax WHERE id=:dividend_id",
                        [(":dividend_id", dividend_id), (":tax", old_tax + amount)])
         self.db.commit()
+
+    def findDividend4Tax(self, timestamp, account_id, asset_id, note):
+        # Check strong match
+        id = readSQL(self.db, "SELECT id FROM dividends WHERE type=:div AND timestamp=:timestamp "
+                              "AND account_id=:account_id AND asset_id=:asset_id AND note LIKE :dividend_description",
+                     [(":div", DividendSubtype.Dividend), (":timestamp", timestamp), (":account_id", account_id),
+                      (":asset_id", asset_id), (":dividend_description", note)])
+        if id is not None:
+            return id
+        # Check weak match
+        range_start = ManipulateDate.startOfPreviousYear(day=datetime.utcfromtimestamp(timestamp))
+        count = readSQL(self.db, "SELECT COUNT(id) FROM dividends WHERE type=:div AND timestamp>=:start_range "
+                              "AND account_id=:account_id AND asset_id=:asset_id AND note LIKE :dividend_description",
+                     [(":div", DividendSubtype.Dividend), (":start_range", range_start), (":account_id", account_id),
+                      (":asset_id", asset_id), (":dividend_description", note)])
+        if count > 1:
+            logging.warning(g_tr('StatementLoader', "Multiple dividends match withholding tax"))
+            return None
+        id = readSQL(self.db, "SELECT id FROM dividends WHERE type=:div AND timestamp>=:start_range "
+                              "AND account_id=:account_id AND asset_id=:asset_id AND note LIKE :dividend_description",
+                     [(":div", DividendSubtype.Dividend), (":start_range", range_start), (":account_id", account_id),
+                      (":asset_id", asset_id), (":dividend_description", note)])
+        return id
 
     def loadQuikHtml(self, filename):
         try:
