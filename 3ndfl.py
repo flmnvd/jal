@@ -4,7 +4,7 @@ from datetime import datetime
 from PySide2.QtCore import QTranslator, QTimer
 from PySide2.QtWidgets import QApplication
 from PySide2.QtSql import QSql, QSqlDatabase, QSqlQuery
-from jal.widgets.main_window import MainWindow, AbortWindow
+from jal.widgets.main_window import MainWindow
 from jal.db.helpers import init_and_check_db, LedgerInitError, get_language, update_db_schema
 from jal.data_import.statements import executeSQL, readSQL, ReportType
 
@@ -57,14 +57,19 @@ def addAllBanks():
         insertSql(window.db, "INSERT INTO accounts(type_id, name, currency_id, active) VALUES(2,:name,:currency_id,1)",
                   [(":name", "bank"+'-'+currency_name), (":currency_id", currency_id)])
 
+def addFFinBrokerOrganizationPeerAgent():
+    insertSql(window.db, "INSERT INTO agents(name) VALUES('Interactive Brokers')")  # 1
+    insertSql(window.db, "INSERT INTO agents(name) VALUES('Freedom Finance')")      # 2
+
 def addBrokerAccount(name,account_num):
     currency_query:QSqlQuery = executeSQL(window.db, "SELECT id,name FROM assets WHERE type_id=1")
     while currency_query.next():
         currency_id = currency_query.value(0)
         currency_name = currency_query.value(1)
-        insertSql(window.db, "INSERT INTO accounts(type_id, name, currency_id, active, number) \
-                               VALUES(4, :name, :currency_id, 1, :number)",
-                  [(":name", name+'-'+currency_name), (":currency_id", currency_id), (":number", account_num)])
+        peer = '1' if name.startswith('ib') else '2'
+        insertSql(window.db, "INSERT INTO accounts(type_id, name, currency_id, active, number, organization_id) \
+                               VALUES(4, :name, :currency_id, 1, :number, :peer)",
+                  [(":name", name+'-'+currency_name), (":currency_id", currency_id), (":number", account_num), (":peer", peer)] )
 
 def addAllAccounts():
     accs = set()
@@ -127,6 +132,7 @@ def saveTaxReports():
             window.taxes.save2file(fpath, year, account_id)
 
 def doThings():
+    addFFinBrokerOrganizationPeerAgent()
     addAllCurrencies()
     addAllBanks()
     addAllAccounts()

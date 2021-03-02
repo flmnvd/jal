@@ -1124,6 +1124,10 @@ class StatementLoader(QObject):
         return True
 
 
+    #def getFFinAccount(self):
+    #    bank_id = readSQL(self.db, "SELECT id FROM agents WHERE name='Freedom Finance'")
+
+
     def loadFFinTrades(self, filename):
         try:
             data = pandas.read_excel(filename, sheet_name="trades", dtype={FFin.Account: str},
@@ -1131,8 +1135,8 @@ class StatementLoader(QObject):
                                          #converters={FFin.Qty: convert_amount, FFin.Price: convert_amount,
                                           #           FFin.Fee: convert_amount, FFin.FeeEx: convert_amount,})
             data = data.dropna()
-            with pandas.option_context('display.max_rows', None, 'display.max_columns', None):
-                print(data)
+            #with pandas.option_context('display.max_rows', None, 'display.max_columns', None):
+            #    print(data)
         except:
             logging.error(g_tr('StatementLoader', "Can't read statement file"))
             return False
@@ -1144,7 +1148,7 @@ class StatementLoader(QObject):
                 logging.error(g_tr('StatementLoader', "Can't get account number from the statement."))
                 return False
 
-            account_id = self.findAccountID(account_num)
+            account_id = self.findAccountID(account_num, "USD")
             if account_id is None:
                 logging.error(g_tr('StatementLoader', "Account with number ") + f"{account_num}" +
                               g_tr('StatementLoader', " not found. Import cancelled."))
@@ -1168,6 +1172,7 @@ class StatementLoader(QObject):
             #lot_size = math.pow(10, round(math.log10(amount / (price * abs(qty)))))
             #qty = qty * lot_size
             fee = float(row[FFin.Fee]) + abs(float(row[FFin.FeeEx]))  # TODO: Why negative fee?
+            print(symbol, asset_id, timestamp, settlement, number, qty, price, -fee)
             self.createTrade(account_id, asset_id, timestamp, settlement, number, qty, price, -fee)
         return True
 
