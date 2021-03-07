@@ -100,13 +100,9 @@ class TransferWidget(AbstractOperationDetails):
         self.copy_date_btn.clicked.connect(self.onCopyDate)
         self.copy_amount_btn.clicked.connect(self.onCopyAmount)
 
-    def init_db(self, db):
-        super().init_db(db, "transfers")
+        super()._init_db("transfers")
         self.mapper.setItemDelegate(MapperDelegate(self.mapper))
 
-        self.from_account_widget.init_db(db)
-        self.to_account_widget.init_db(db)
-        self.fee_account_widget.init_db(db)
         self.from_account_widget.changed.connect(self.mapper.submit)
         self.to_account_widget.changed.connect(self.mapper.submit)
         self.fee_account_widget.changed.connect(self.mapper.submit)

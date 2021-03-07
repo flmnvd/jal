@@ -14,11 +14,10 @@ from jal.ui.ui_tax_export_dlg import Ui_TaxExportDlg
 
 # -----------------------------------------------------------------------------------------------------------------------
 class TaxExportDialog(QDialog, Ui_TaxExportDlg):
-    def __init__(self, parent, db):
+    def __init__(self, parent):
         QDialog.__init__(self)
         self.setupUi(self)
 
-        self.AccountWidget.init_db(db)
         self.XlsSelectBtn.pressed.connect(partial(self.OnFileBtn, 'XLS-OUT'))
         self.InitialSelectBtn.pressed.connect(partial(self.OnFileBtn, 'DLSG-IN'))
         self.OutputSelectBtn.pressed.connect(partial(self.OnFileBtn, 'DLSG-OUT'))
@@ -109,8 +108,7 @@ class TaxesRus:
         CorporateAction.StockDividend: "Допэмиссия акций: {after} {new}"
     }
 
-    def __init__(self, db):
-        self.db = db
+    def __init__(self):
         self.account_id = 0
         self.year_begin = 0
         self.year_end = 0
@@ -258,7 +256,7 @@ class TaxesRus:
         }
 
     def showTaxesDialog(self, parent):
-        dialog = TaxExportDialog(parent, self.db)
+        dialog = TaxExportDialog(parent)
         if dialog.exec_():
             self.use_settlement = not dialog.no_settelement
             self.save2file(dialog.xls_filename, dialog.year, dialog.account, dlsg_update=dialog.update_dlsg,
@@ -269,12 +267,10 @@ class TaxesRus:
                   dlsg_update=False, dlsg_in=None, dlsg_out=None, dlsg_dividends_only=False):
         self.account_id = account_id
         self.account_number, self.account_currency = \
-            readSQL(self.db,
-                    "SELECT a.number, c.name FROM accounts AS a "
+            readSQL("SELECT a.number, c.name FROM accounts AS a "
                     "LEFT JOIN assets AS c ON a.currency_id = c.id WHERE a.id=:account",
                     [(":account", account_id)])
-        self.broker_name = readSQL(self.db,
-                                   "SELECT b.name FROM accounts AS a "
+        self.broker_name = readSQL("SELECT b.name FROM accounts AS a "
                                    "LEFT JOIN agents AS b ON a.organization_id = b.id WHERE a.id=:account",
                                    [(":account", account_id)])
         self.year_begin = int(datetime.strptime(f"{year}", "%Y").replace(tzinfo=timezone.utc).timestamp())
@@ -385,9 +381,8 @@ class TaxesRus:
     # As any action has exact timestamp it won't match rough timestamp of exchange rate most probably
     # Function fills 't_last_dates' table with correspondence between 'real' timestamp and nearest 'exchange' timestamp
     def prepare_exchange_rate_dates(self):
-        _ = executeSQL(self.db, "DELETE FROM t_last_dates")
-        _ = executeSQL(self.db,
-                       "INSERT INTO t_last_dates(ref_id, timestamp) "
+        _ = executeSQL("DELETE FROM t_last_dates")
+        _ = executeSQL("INSERT INTO t_last_dates(ref_id, timestamp) "
                        "SELECT ref_id, coalesce(MAX(q.timestamp), 0) AS timestamp "
                        "FROM (SELECT d.timestamp AS ref_id "
                        "FROM dividends AS d "
@@ -417,13 +412,11 @@ class TaxesRus:
                        "LEFT JOIN accounts AS a ON a.id = :account_id "
                        "LEFT JOIN quotes AS q ON ref_id >= q.timestamp AND a.currency_id=q.asset_id "
                        "WHERE ref_id IS NOT NULL "
-                       "GROUP BY ref_id", [(":account_id", self.account_id)])
-        self.db.commit()
+                       "GROUP BY ref_id", [(":account_id", self.account_id)], commit=True)
 
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_dividends(self):
-        query = executeSQL(self.db,
-                           "SELECT d.timestamp AS payment_date, s.name AS symbol, s.full_name AS full_name, "
+        query = executeSQL("SELECT d.timestamp AS payment_date, s.name AS symbol, s.full_name AS full_name, "
                            "s.isin AS isin, d.amount AS amount, d.tax AS tax, q.quote AS rate , "
                            "c.name AS country, c.code AS country_code, c.tax_treaty AS tax_treaty "
                            "FROM dividends AS d "
@@ -450,9 +443,9 @@ class TaxesRus:
             self.add_report_row(row, dividend, even_odd=row)
 
             if dividend["country_code"] == 'xx':
-                dividend["country_code"] = readSQL(self.db, "SELECT code FROM accounts AS a LEFT JOIN countries AS c "
+                dividend["country_code"] = readSQL("SELECT code FROM accounts AS a LEFT JOIN countries AS c "
                                                    "ON c.id = a.country_id WHERE a.id=:account_id",
-                                          [(":account_id", self.account_id)])
+                                                   [(":account_id", self.account_id)])
                 logging.warning(g_tr('TaxesRus',
                                      "Account country will be used for 3-NDFL update as country is not set for asset ")
                                 + f"'{dividend['symbol']}'")
@@ -469,8 +462,7 @@ class TaxesRus:
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_stocks_and_etf(self):
         # Take all actions without conversion
-        query = executeSQL(self.db,
-                           "SELECT s.name AS symbol, s.isin AS isin, d.qty AS qty, cc.code AS country_code, "
+        query = executeSQL("SELECT s.name AS symbol, s.isin AS isin, d.qty AS qty, cc.code AS country_code, "
                            "o.timestamp AS o_date, qo.quote AS o_rate, o.settlement AS os_date, o.number AS o_number, "
                            "qos.quote AS os_rate, o.price AS o_price, o.qty AS o_qty, o.fee AS o_fee, "
                            "c.timestamp AS c_date, qc.quote AS c_rate, c.settlement AS cs_date, c.number AS c_number, "
@@ -493,7 +485,7 @@ class TaxesRus:
                            "LEFT JOIN quotes AS qcs ON ldcs.timestamp=qcs.timestamp AND a.currency_id=qcs.asset_id "
                            "WHERE c.timestamp>=:begin AND c.timestamp<:end AND d.account_id=:account_id "
                            "AND (s.type_id = :stock OR s.type_id = :fund) "
-                           "ORDER BY o.timestamp, c.timestamp",
+                           "ORDER BY s.name, o.timestamp, c.timestamp",
                            [(":begin", self.year_begin), (":end", self.year_end), (":account_id", self.account_id),
                             (":stock", PredefinedAsset.Stock), (":fund", PredefinedAsset.ETF)])
         start_row = self.data_start_row
@@ -539,8 +531,7 @@ class TaxesRus:
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_bonds(self):
         # First put all closed deals with bonds
-        query = executeSQL(self.db,
-                           "SELECT s.name AS symbol, s.isin AS isin, d.qty AS qty, cc.code AS country_code, "
+        query = executeSQL("SELECT s.name AS symbol, s.isin AS isin, d.qty AS qty, cc.code AS country_code, "
                            "o.timestamp AS o_date, qo.quote AS o_rate, o.settlement AS os_date, o.number AS o_number, "
                            "qos.quote AS os_rate, o.price AS o_price, o.qty AS o_qty, o.fee AS o_fee, -oi.amount AS o_int, "
                            "c.timestamp AS c_date, qc.quote AS c_rate, c.settlement AS cs_date, c.number AS c_number, "
@@ -565,7 +556,7 @@ class TaxesRus:
                            "LEFT JOIN quotes AS qcs ON ldcs.timestamp=qcs.timestamp AND a.currency_id=qcs.asset_id "
                            "WHERE c.timestamp>=:begin AND c.timestamp<:end AND d.account_id=:account_id "
                            "AND s.type_id = :bond "
-                           "ORDER BY o.timestamp, c.timestamp",
+                           "ORDER BY s.name, o.timestamp, c.timestamp",
                            [(":begin", self.year_begin), (":end", self.year_end), (":account_id", self.account_id),
                             (":bond", PredefinedAsset.Bond)])
         start_row = self.data_start_row
@@ -614,8 +605,7 @@ class TaxesRus:
         row = start_row + (data_row * 2)
 
         # Second - take all bond interest payments not linked with buy/sell transactions
-        query = executeSQL(self.db,
-                           "SELECT b.name AS symbol, b.isin AS isin, i.timestamp AS o_date, i.number AS number, "
+        query = executeSQL("SELECT b.name AS symbol, b.isin AS isin, i.timestamp AS o_date, i.number AS number, "
                            "i.amount AS interest, r.quote AS rate, cc.code AS country_code "
                            "FROM dividends AS i "
                            "LEFT JOIN trades AS t ON i.account_id=1 AND i.number=t.number "
@@ -651,8 +641,7 @@ class TaxesRus:
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_derivatives(self):
         # Take all actions without conversion
-        query = executeSQL(self.db,
-                           "SELECT s.name AS symbol, d.qty AS qty, cc.code AS country_code, "
+        query = executeSQL("SELECT s.name AS symbol, d.qty AS qty, cc.code AS country_code, "
                            "o.timestamp AS o_date, qo.quote AS o_rate, o.settlement AS os_date, o.number AS o_number, "
                            "qos.quote AS os_rate, o.price AS o_price, o.qty AS o_qty, o.fee AS o_fee, "
                            "c.timestamp AS c_date, qc.quote AS c_rate, c.settlement AS cs_date, c.number AS c_number, "
@@ -675,7 +664,7 @@ class TaxesRus:
                            "LEFT JOIN quotes AS qcs ON ldcs.timestamp=qcs.timestamp AND a.currency_id=qcs.asset_id "
                            "WHERE c.timestamp>=:begin AND c.timestamp<:end AND d.account_id=:account_id "
                            "AND s.type_id == 6 "  # To select only derivatives
-                           "ORDER BY o.timestamp, c.timestamp",
+                           "ORDER BY s.name, o.timestamp, c.timestamp",
                            [(":begin", self.year_begin), (":end", self.year_end), (":account_id", self.account_id)])
         start_row = self.data_start_row
         data_row = 0
@@ -719,8 +708,7 @@ class TaxesRus:
 
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_broker_fees(self):
-        query = executeSQL(self.db,
-                           "SELECT a.timestamp AS payment_date, d.sum AS amount, d.note AS note, q.quote AS rate "
+        query = executeSQL("SELECT a.timestamp AS payment_date, d.sum AS amount, d.note AS note, q.quote AS rate "
                            "FROM actions AS a "
                            "LEFT JOIN action_details AS d ON d.pid=a.id "
                            "LEFT JOIN accounts AS c ON c.id = :account_id "
@@ -737,13 +725,12 @@ class TaxesRus:
             fee['amount_rub'] = round(fee['amount'] * fee['rate'], 2) if fee['rate'] else 0
             self.add_report_row(row, fee, even_odd=row)
             row += 1
-        self.reports_xls.add_totals_footer(self.current_sheet, start_row, row, [3, 4])
+        self.reports_xls.add_totals_footer(self.current_sheet, start_row, row, [0, 1, 4])
         return row + 1
 
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_broker_interest(self):
-        query = executeSQL(self.db,
-                           "SELECT a.timestamp AS payment_date, d.sum AS amount, d.note AS note, q.quote AS rate "
+        query = executeSQL("SELECT a.timestamp AS payment_date, d.sum AS amount, d.note AS note, q.quote AS rate "
                            "FROM actions AS a "
                            "LEFT JOIN action_details AS d ON d.pid=a.id "
                            "LEFT JOIN accounts AS c ON c.id = :account_id "
@@ -761,14 +748,13 @@ class TaxesRus:
             interest['tax_rub'] = round(0.13 * interest['amount_rub'], 2)
             self.add_report_row(row, interest, even_odd=row)
             row += 1
-        self.reports_xls.add_totals_footer(self.current_sheet, start_row, row, [3, 4, 5])
+        self.reports_xls.add_totals_footer(self.current_sheet, start_row, row, [0, 1, 4, 5])
         return row + 1
 
     # -----------------------------------------------------------------------------------------------------------------------
     def prepare_corporate_actions(self):
         # get list of all deals that were opened with corp.action and closed by normal trade
-        query = executeSQL(self.db,
-                           "SELECT d.open_sid AS sid, s.name AS symbol, d.qty AS qty, t.number AS trade_number, "
+        query = executeSQL("SELECT d.open_sid AS sid, s.name AS symbol, d.qty AS qty, t.number AS trade_number, "
                            "t.timestamp AS t_date, qt.quote AS t_rate, t.settlement AS s_date, qts.quote AS s_rate, "
                            "t.price AS price, t.fee AS fee, s.full_name AS full_name, s.isin AS isin "
                            "FROM deals AS d "
@@ -793,7 +779,7 @@ class TaxesRus:
             sale = readSQLrecord(query, named=True)
             if previous_symbol != sale['symbol']:
                 # Clean processed qty records if symbol have changed
-                _ = executeSQL(self.db, "DELETE FROM t_last_assets")
+                _ = executeSQL("DELETE FROM t_last_assets")
                 if sale["t_date"] >= self.year_begin:  # Don't put sub-header of operation is out of scope
                     self.current_sheet.write(row, 0, f"Сделки по бумаге: {sale['symbol']} - {sale['full_name']}",
                                              self.reports_xls.formats.Bold())
@@ -833,11 +819,11 @@ class TaxesRus:
 
     def next_corporate_action(self, sid, symbol, qty, basis, level, row, even_odd):
         # get list of deals that were closed as result of current corporate action
-        open_query = executeSQL(self.db, "SELECT d.open_sid AS open_sid, os.type AS op_type "
-                                         "FROM deals AS d "
-                                         "JOIN sequence AS os ON os.id=d.open_sid AND (os.type = 3 OR os.type = 5) "
-                                         "WHERE d.close_sid = :sid "
-                                         "ORDER BY d.open_sid",
+        open_query = executeSQL("SELECT d.open_sid AS open_sid, os.type AS op_type "
+                                "FROM deals AS d "
+                                "JOIN sequence AS os ON os.id=d.open_sid AND (os.type = 3 OR os.type = 5) "
+                                "WHERE d.close_sid = :sid "
+                                "ORDER BY d.open_sid",
                                 [(":sid", sid)])
         while open_query.next():
             open_sid, op_type = readSQLrecord(open_query)
@@ -854,8 +840,7 @@ class TaxesRus:
         if proceed_qty <= 0:
             return row, proceed_qty
 
-        purchase = readSQL(self.db,
-                           "SELECT t.id AS trade_id, s.name AS symbol, s.isin AS isin, "
+        purchase = readSQL("SELECT t.id AS trade_id, s.name AS symbol, s.isin AS isin, "
                            "coalesce(d.qty-SUM(lq.total_value), d.qty) AS qty, "
                            "t.timestamp AS t_date, qt.quote AS t_rate, t.number AS trade_number, "
                            "t.settlement AS s_date, qts.quote AS s_rate, t.price AS price, t.fee AS fee "
@@ -885,7 +870,7 @@ class TaxesRus:
         purchase['income_rub'] = 0
         purchase['spending_rub'] = round(basis*(purchase['amount_rub'] + purchase['fee_rub']), 2)
 
-        _ = executeSQL(self.db, "INSERT INTO t_last_assets (id, total_value) VALUES (:trade_id, :qty)",
+        _ = executeSQL("INSERT INTO t_last_assets (id, total_value) VALUES (:trade_id, :qty)",
                        [(":trade_id", purchase['trade_id']), (":qty", purchase['qty'])])
         if level >= 0:  # Don't output if level==-1, i.e. corp action is out of report scope
             self.add_report_row(row, purchase, even_odd=even_odd)
@@ -896,15 +881,15 @@ class TaxesRus:
         if proceed_qty <= 0:
             return row, proceed_qty
 
-        action = readSQL(self.db, "SELECT a.timestamp AS action_date, a.number AS action_number, a.type, "
-                                  "s1.name AS symbol, s1.isin AS isin, a.qty AS qty, "
-                                  "s2.name AS symbol_new, s2.isin AS isin_new, a.qty_new AS qty_new, "
-                                  "a.note AS note, a.basis_ratio "
-                                  "FROM sequence AS os "
-                                  "LEFT JOIN corp_actions AS a ON os.operation_id=a.id "
-                                  "LEFT JOIN assets AS s1 ON a.asset_id=s1.id "
-                                  "LEFT JOIN assets AS s2 ON a.asset_id_new=s2.id "
-                                  "WHERE os.id = :open_sid ",
+        action = readSQL("SELECT a.timestamp AS action_date, a.number AS action_number, a.type, "
+                         "s1.name AS symbol, s1.isin AS isin, a.qty AS qty, "
+                         "s2.name AS symbol_new, s2.isin AS isin_new, a.qty_new AS qty_new, "
+                         "a.note AS note, a.basis_ratio "
+                         "FROM sequence AS os "
+                         "LEFT JOIN corp_actions AS a ON os.operation_id=a.id "
+                         "LEFT JOIN assets AS s1 ON a.asset_id=s1.id "
+                         "LEFT JOIN assets AS s2 ON a.asset_id_new=s2.id "
+                         "WHERE os.id = :open_sid ",
                          [(":open_sid", sid)], named=True)
         action['operation'] = ' ' * level * 3 + "Корп. действие"
         old_asset = f"{action['symbol']} ({action['isin']})"

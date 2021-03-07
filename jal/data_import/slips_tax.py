@@ -38,10 +38,9 @@ class RequestInterceptor(QWebEngineUrlRequestInterceptor):
 
 #-----------------------------------------------------------------------------------------------------------------------
 class LoginFNS(QDialog, Ui_LoginFNSDialog):
-    def __init__(self, db, parent=None):
+    def __init__(self, parent=None):
         QDialog.__init__(self, parent=parent)
         self.setupUi(self)
-        self.db = db
 
         self.web_session = requests.Session()
         self.web_profile = QWebEngineProfile()
@@ -81,7 +80,6 @@ class LoginFNS(QDialog, Ui_LoginFNSDialog):
         settings = JalSettings()
         settings.setValue('RuTaxSessionId', new_session_id)
         settings.setValue('RuTaxRefreshToken', new_refresh_token)
-        self.db.commit()
         self.accept()
 
     def login_esia(self):
@@ -115,7 +113,6 @@ class LoginFNS(QDialog, Ui_LoginFNSDialog):
         settings = JalSettings()
         settings.setValue('RuTaxSessionId', new_session_id)
         settings.setValue('RuTaxRefreshToken', new_refresh_token)
-        self.db.commit()
         self.accept()
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -125,8 +122,7 @@ class SlipsTaxAPI:
     Success = 0
     Pending = 1
 
-    def __init__(self, db):
-        self.db = db
+    def __init__(self):
         self.slip_json = None
 
     def get_ru_tax_session(self):
@@ -134,7 +130,7 @@ class SlipsTaxAPI:
         if stored_id != '':
             return stored_id
 
-        login_dialog = LoginFNS(self.db)
+        login_dialog = LoginFNS()
         if login_dialog.exec_() == QDialog.Accepted:
             stored_id = JalSettings().getValue('RuTaxSessionId')
             if stored_id is not None:
