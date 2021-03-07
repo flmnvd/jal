@@ -85,12 +85,9 @@ class TradeWidget(AbstractOperationDetails):
         self.layout.addItem(self.verticalSpacer, 6, 6, 1, 1)
         self.layout.addItem(self.horizontalSpacer, 1, 6, 1, 1)
 
-    def init_db(self, db):
-        super().init_db(db, "trades")
+        super()._init_db("trades")
         self.mapper.setItemDelegate(MapperDelegate(self.mapper))
 
-        self.account_widget.init_db(db)
-        self.asset_widget.init_db(db)
         self.account_widget.changed.connect(self.mapper.submit)
         self.asset_widget.changed.connect(self.mapper.submit)
 

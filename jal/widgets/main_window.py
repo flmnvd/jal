@@ -9,7 +9,8 @@ from PySide2.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QLa
 from jal import __version__
 from jal.ui.ui_main_window import Ui_LedgerMainWindow
 from jal.ui_custom.helpers import g_tr, ManipulateDate, dependency_present
-from jal.ui_custom.reference_dialogs import ReferenceDialogs
+from jal.ui_custom.reference_dialogs import AccountTypeListDialog, AccountListDialog, AssetListDialog, TagsListDialog,\
+    CategoryListDialog, CountryListDialog, QuotesListDialog, PeerListDialog
 from jal.constants import TransactionType
 from jal.db.backup_restore import JalBackup
 from jal.db.helpers import get_dbfilename, executeSQL
@@ -28,26 +29,38 @@ from jal.db.tax_estimator import TaxEstimator
 
 #-----------------------------------------------------------------------------------------------------------------------
 class MainWindow(QMainWindow, Ui_LedgerMainWindow):
-    def __init__(self, db, own_path, language):
+    def __init__(self, own_path, language):
         QMainWindow.__init__(self, None)
         self.setupUi(self)
 
-        self.db = db  # TODO Get rid of any connection storage as we may get it anytime (example is in JalSettings)
         self.own_path = own_path
         self.currentLanguage = language
         self.current_index = None  # this is used in onOperationContextMenu() to track item for menu
 
-        self.ledger = Ledger(self.db)
-        self.downloader = QuoteDownloader(self.db)
-        self.downloader.download_completed.connect(self.onQuotesDownloadCompletion)
-        self.taxes = TaxesRus(self.db)
-        self.statements = StatementLoader(self, self.db)
-        self.statements.load_completed.connect(self.onStatementLoaded)
-        self.statements.load_failed.connect(self.onStatementLoadFailure)
+        self.ledger = Ledger()
+        self.downloader = QuoteDownloader()
+        self.taxes = TaxesRus()
+        self.statements = StatementLoader(self)
         self.backup = JalBackup(self, get_dbfilename(self.own_path))
         self.estimator = None
 
         self.actionImportSlipRU.setEnabled(dependency_present(['pyzbar', 'PIL']))
+
+        self.actionAbout = QAction(text=g_tr('MainWindow', "About"), parent=self)
+        self.MainMenu.addAction(self.actionAbout)
+
+        self.langGroup = QActionGroup(self.menuLanguage)
+        self.createLanguageMenu()
+
+        # Operations view context menu
+        self.contextMenu = QMenu(self.OperationsTableView)
+        self.actionReconcile = QAction(text=g_tr('MainWindow', "Reconcile"), parent=self)
+        self.actionCopy = QAction(text=g_tr('MainWindow', "Copy"), parent=self)
+        self.actionDelete = QAction(text=g_tr('MainWindow', "Delete"), parent=self)
+        self.contextMenu.addAction(self.actionReconcile)
+        self.contextMenu.addSeparator()
+        self.contextMenu.addAction(self.actionCopy)
+        self.contextMenu.addAction(self.actionDelete)
 
         # Customize Status bar and logs
         self.NewLogEventLbl = QLabel(self)
@@ -60,33 +73,29 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         self.logger.setLevel(log_level)
 
         # Setup reports tab
-        self.ReportAccountBtn.init_db(self.db)
-        self.ReportCategoryEdit.init_db(self.db)
-        self.reports = Reports(self.db, self.ReportTableView)
+        self.reports = Reports(self.ReportTableView)
         self.reports.report_failure.connect(self.onReportFailure)
 
         # Customize UI configuration
-        self.balances_model = BalancesModel(self.BalancesTableView, self.db)
+        self.balances_model = BalancesModel(self.BalancesTableView)
         self.BalancesTableView.setModel(self.balances_model)
         self.balances_model.configureView()
 
-        self.holdings_model = HoldingsModel(self.HoldingsTableView, self.db)
+        self.holdings_model = HoldingsModel(self.HoldingsTableView)
         self.HoldingsTableView.setModel(self.holdings_model)
         self.holdings_model.configureView()
         self.HoldingsTableView.setContextMenuPolicy(Qt.CustomContextMenu)
 
-        self.operations_model = OperationsModel(self.OperationsTableView, self.db)
+        self.operations_model = OperationsModel(self.OperationsTableView)
         self.OperationsTableView.setModel(self.operations_model)
         self.operations_model.configureView()
         self.OperationsTableView.setContextMenuPolicy(Qt.CustomContextMenu)
 
-        self.reference_dialogs = ReferenceDialogs(self)
         self.connect_signals_and_slots()
 
         self.NewOperationMenu = QMenu()
         for i in range(self.OperationsTabs.count()):
             if hasattr(self.OperationsTabs.widget(i), "isCustom"):
-                self.OperationsTabs.widget(i).init_db(self.db)
                 self.OperationsTabs.widget(i).dbUpdated.connect(self.showCommitted)
                 self.NewOperationMenu.addAction(self.OperationsTabs.widget(i).name,
                                                 partial(self.createOperation, i))
@@ -94,33 +103,9 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
 
         # Setup balance and holdings parameters
         self.BalanceDate.setDateTime(QDateTime.currentDateTime())
-        self.BalancesCurrencyCombo.init_db(self.db, JalSettings().getValue('BaseCurrency'))
+        self.BalancesCurrencyCombo.setIndex(JalSettings().getValue('BaseCurrency'))
         self.HoldingsDate.setDateTime(QDateTime.currentDateTime())
-        self.HoldingsCurrencyCombo.init_db(self.db, JalSettings().getValue('BaseCurrency'))
-
-        # Create menu for different operations
-        self.ChooseAccountBtn.init_db(self.db)
-
-        # Operations view context menu
-        self.contextMenu = QMenu(self.OperationsTableView)
-        self.actionReconcile = QAction(text=g_tr('MainWindow', "Reconcile"), parent=self)
-        self.actionReconcile.triggered.connect(self.reconcileAtCurrentOperation)
-        self.actionCopy = QAction(text=g_tr('MainWindow', "Copy"), parent=self)
-        self.actionCopy.triggered.connect(self.copyOperation)
-        self.actionDelete = QAction(text=g_tr('MainWindow', "Delete"), parent=self)
-        self.actionDelete.triggered.connect(self.deleteOperation)
-        self.contextMenu.addAction(self.actionReconcile)
-        self.contextMenu.addSeparator()
-        self.contextMenu.addAction(self.actionCopy)
-        self.contextMenu.addAction(self.actionDelete)
-
-        self.actionAbout = QAction(text=g_tr('MainWindow', "Abou&t"), parent=self)
-        self.MainMenu.addAction(self.actionAbout)
-        self.actionAbout.triggered.connect(self.showAboutWindow)
-
-        self.langGroup = QActionGroup(self.menuLanguage)
-        self.createLanguageMenu()
-        self.langGroup.triggered.connect(self.onLanguageChanged)
+        self.HoldingsCurrencyCombo.setIndex(JalSettings().getValue('BaseCurrency'))
 
         self.OperationsTabs.setCurrentIndex(TransactionType.NA)
         self.OperationsTableView.selectRow(0)
@@ -128,20 +113,23 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
 
     def connect_signals_and_slots(self):
         self.actionExit.triggered.connect(QApplication.instance().quit)
+        self.actionAbout.triggered.connect(self.showAboutWindow)
+        self.langGroup.triggered.connect(self.onLanguageChanged)
+        self.actionReconcile.triggered.connect(self.reconcileAtCurrentOperation)
         self.action_Load_quotes.triggered.connect(partial(self.downloader.showQuoteDownloadDialog, self))
         self.actionImportStatement.triggered.connect(self.statements.loadReport)
         self.actionImportSlipRU.triggered.connect(self.importSlip)
         self.actionBackup.triggered.connect(self.backup.create)
         self.actionRestore.triggered.connect(self.backup.restore)
         self.action_Re_build_Ledger.triggered.connect(partial(self.ledger.showRebuildDialog, self))
-        self.actionAccountTypes.triggered.connect(partial(self.reference_dialogs.show, "account_types"))
-        self.actionAccounts.triggered.connect(partial(self.reference_dialogs.show, "accounts"))
-        self.actionAssets.triggered.connect(partial(self.reference_dialogs.show, "assets"))
-        self.actionPeers.triggered.connect(partial(self.reference_dialogs.show, "agents_ext"))
-        self.actionCategories.triggered.connect(partial(self.reference_dialogs.show, "categories_ext"))
-        self.actionTags.triggered.connect(partial(self.reference_dialogs.show, "tags"))
-        self.actionCountries.triggered.connect(partial(self.reference_dialogs.show, "countries"))
-        self.actionQuotes.triggered.connect(partial(self.reference_dialogs.show, "quotes"))
+        self.actionAccountTypes.triggered.connect(partial(self.onDataDialog, "account_types"))
+        self.actionAccounts.triggered.connect(partial(self.onDataDialog, "accounts"))
+        self.actionAssets.triggered.connect(partial(self.onDataDialog, "assets"))
+        self.actionPeers.triggered.connect(partial(self.onDataDialog, "agents_ext"))
+        self.actionCategories.triggered.connect(partial(self.onDataDialog, "categories_ext"))
+        self.actionTags.triggered.connect(partial(self.onDataDialog, "tags"))
+        self.actionCountries.triggered.connect(partial(self.onDataDialog, "countries"))
+        self.actionQuotes.triggered.connect(partial(self.onDataDialog, "quotes"))
         self.PrepareTaxForms.triggered.connect(partial(self.taxes.showTaxesDialog, self))
         self.BalanceDate.dateChanged.connect(self.BalancesTableView.model().setDate)
         self.HoldingsDate.dateChanged.connect(self.HoldingsTableView.model().setDate)
@@ -159,16 +147,16 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         self.OperationsTableView.selectionModel().selectionChanged.connect(self.OnOperationChange)
         self.OperationsTableView.customContextMenuRequested.connect(self.onOperationContextMenu)
         self.DeleteOperationBtn.clicked.connect(self.deleteOperation)
+        self.actionDelete.triggered.connect(self.deleteOperation)
         self.CopyOperationBtn.clicked.connect(self.copyOperation)
-
-    def closeDatabase(self):
-        self.db.close()
+        self.actionCopy.triggered.connect(self.copyOperation)
+        self.downloader.download_completed.connect(self.onQuotesDownloadCompletion)
+        self.statements.load_completed.connect(self.onStatementLoaded)
 
     @Slot()
     def closeEvent(self, event):
         self.logger.removeHandler(self.Logs)    # Removing handler (but it doesn't prevent exception at exit)
         logging.raiseExceptions = False         # Silencing logging module exceptions
-        self.db.close()                         # Closing database file
 
     def createLanguageMenu(self):
         langPath = self.own_path + "languages" + os.sep
@@ -188,8 +176,7 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
     def onLanguageChanged(self, action):
         language_code = action.data()
         if language_code != self.currentLanguage:
-            executeSQL(self.db,
-                       "UPDATE settings "
+            executeSQL("UPDATE settings "
                        "SET value=(SELECT id FROM languages WHERE language = :new_language) WHERE name ='Language'",
                        [(':new_language', language_code)])
             QMessageBox().information(self, g_tr('MainWindow', "Restart required"),
@@ -208,8 +195,9 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
         title = g_tr('MainWindow',
                      "<h3>JAL</h3><p>Just Another Ledger, version {version}</p>".format(version=__version__))
         about_box.setText(title)
-        about = g_tr('MainWindow', "<p>Please visit <a href=\"https://github.com/titov-vv/jal\">"
-                                   "Github home page</a> for more information</p>")
+        about = g_tr('MainWindow', "<p>More information, manuals and problem reports are at "
+                                   "<a href=https://github.com/titov-vv/jal>github home page</a></p>"
+                                   "<p>Questions, comments, donations: <a href=mailto:jal@gmx.ru>jal@gmx.ru</a></p>")
         about_box.setInformativeText(about)
         about_box.show()
 
@@ -264,18 +252,12 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
 
     @Slot()
     def onQuotesDownloadCompletion(self):
-        self.StatusBar.showMessage(g_tr('MainWindow', "Quotes download completed"), timeout=60000)
         self.balances_model.update()
 
     @Slot()
     def onStatementLoaded(self):
-        self.StatusBar.showMessage(g_tr('MainWindow', "Statement load completed"), timeout=60000)
         self.ledger.rebuild()
         self.balances_model.update()  # FIXME this should be better linked to some signal emitted by ledger after rebuild completion
-
-    @Slot()
-    def onStatementLoadFailure(self):
-        self.StatusBar.showMessage(g_tr('MainWindow', "Statement load failed"), timeout=60000)
 
     @Slot()
     def showCommitted(self):
@@ -284,7 +266,7 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
 
     @Slot()
     def importSlip(self):
-        dialog = ImportSlipDialog(self, self.db)
+        dialog = ImportSlipDialog(self)
         dialog.show()
 
     @Slot()
@@ -301,7 +283,7 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
     def estimateRussianTax(self, position, index):
         model = index.model()
         account, asset, asset_qty = model.get_data_for_tax(index)
-        self.estimator = TaxEstimator(self.db, account, asset, asset_qty, position)
+        self.estimator = TaxEstimator(account, asset, asset_qty, position)
         if self.estimator.ready:
             self.estimator.open()
 
@@ -374,3 +356,24 @@ class MainWindow(QMainWindow, Ui_LedgerMainWindow):
             return
         self.checkForUncommittedChanges()
         self.OperationsTabs.widget(operation_type).copyNew()
+
+    @Slot()
+    def onDataDialog(self, dlg_type):
+        if dlg_type == "account_types":
+            AccountTypeListDialog().exec_()
+        elif dlg_type == "accounts":
+            AccountListDialog().exec_()
+        elif dlg_type == "assets":
+            AssetListDialog().exec_()
+        elif dlg_type == "agents_ext":
+            PeerListDialog().exec_()
+        elif dlg_type == "categories_ext":
+            CategoryListDialog().exec_()
+        elif dlg_type == "tags":
+            TagsListDialog().exec_()
+        elif dlg_type == "countries":
+            CountryListDialog().exec_()
+        elif dlg_type == "quotes":
+            QuotesListDialog().exec_()
+        else:
+            assert False

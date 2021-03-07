@@ -53,11 +53,10 @@ class HoldingsModel(QAbstractItemModel):
     COL_VALUE = 17
     COL_VALUE_A = 18
 
-    def __init__(self, parent_view, db):
+    def __init__(self, parent_view):
         super().__init__(parent_view)
         self._view = parent_view
         self._grid_delegate = None
-        self._db = db
         self._root = None
         self._currency = 0
         self._currency_name = ''
@@ -202,7 +201,7 @@ class HoldingsModel(QAbstractItemModel):
     def setCurrency(self, currency_id):
         if self._currency != currency_id:
             self._currency = currency_id
-            self._currency_name = get_asset_name(self._db, currency_id)
+            self._currency_name = get_asset_name(currency_id)
             self.calculateHoldings()
 
     @Slot()
@@ -220,7 +219,6 @@ class HoldingsModel(QAbstractItemModel):
     # Populate table 'holdings' with data calculated for given parameters of model: _currency, _date,
     def calculateHoldings(self):
         query = executeSQL(
-            self._db,
             "WITH "
             "_last_quotes AS (SELECT MAX(timestamp) AS timestamp, asset_id, quote "
             "FROM quotes WHERE timestamp <= :holdings_timestamp GROUP BY asset_id), "

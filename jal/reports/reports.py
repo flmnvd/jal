@@ -1,11 +1,12 @@
 import pandas as pd
-from jal.constants import BookAccount, PredefinedAsset, PredefinedCategory, ColumnWidth
+from PySide2.QtWidgets import QFileDialog, QHeaderView
+from PySide2.QtCore import QObject, Signal, QAbstractTableModel
+from PySide2.QtSql import QSqlTableModel
+from jal.constants import BookAccount, PredefinedAsset, PredefinedCategory
 from jal.widgets.view_delegate import *
-from jal.db.helpers import executeSQL, readSQLrecord
-from jal.ui_custom.helpers import g_tr, UseSqlQuery, ConfigureTableView
+from jal.db.helpers import db_connection, executeSQL, readSQLrecord
+from jal.ui_custom.helpers import g_tr
 from jal.reports.helpers import XLSX
-from PySide2.QtWidgets import QFileDialog
-from PySide2.QtCore import Qt, QObject, Signal, QAbstractTableModel
 
 
 TREE_LEVEL_SEPARATOR = chr(127)
@@ -20,7 +21,6 @@ class ReportType:
 
 #-----------------------------------------------------------------------------------------------------------------------
 class PandasModel(QAbstractTableModel):
-
     CATEGORY_INTEND = "  "
 
     def __init__(self, data):
@@ -60,17 +60,143 @@ class PandasModel(QAbstractTableModel):
 
 
 #-----------------------------------------------------------------------------------------------------------------------
+class ProfitLossReportModel(QSqlTableModel):
+    def __init__(self, query, parent_view):
+        self._columns = [("period", g_tr("Reports", "Period")),
+                         ("transfer", g_tr("Reports", "In / Out")),
+                         ("assets", g_tr("Reports", "Assets value")),
+                         ("result", g_tr("Reports", "Total result")),
+                         ("profit", g_tr("Reports", "Profit / Loss")),
+                         ("dividend", g_tr("Reports", "Returns")),
+                         ("tax_fee", g_tr("Reports", "Taxes & Fees"))]
+        self._view = parent_view
+        self._ym_delegate = None
+        self._float_delegate = None
+        QSqlTableModel.__init__(self, parent=parent_view, db=db_connection())
+        self.setQuery(query)
+
+    def setColumnNames(self):
+        for column in self._columns:
+            self.setHeaderData(self.fieldIndex(column[0]), Qt.Horizontal, column[1])
+
+    def configureView(self):
+        self._view.setModel(self)
+        self.setColumnNames()
+        font = self._view.horizontalHeader().font()
+        font.setBold(True)
+        self._view.horizontalHeader().setFont(font)
+        self._view.setColumnWidth(self.fieldIndex("period"),
+                                  self._view.fontMetrics().width("00/00/0000 00:00:00") * 1.1)
+        self._ym_delegate = ReportsYearMonthDelegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("period"), self._ym_delegate)
+        self._float_delegate = ReportsFloat2Delegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("transfer"), self._float_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("assets"), self._float_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("result"), self._float_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("profit"), self._float_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("dividend"), self._float_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("tax_fee"), self._float_delegate)
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+class DealsReportModel(QSqlTableModel):
+    def __init__(self, query, parent_view):
+        self._columns = [("asset", g_tr("Reports", "Asset")),
+                         ("open_timestamp", g_tr("Reports", "Open Date")),
+                         ("close_timestamp", g_tr("Reports", "Close Date")),
+                         ("open_price", g_tr("Reports", "Open Price")),
+                         ("close_price", g_tr("Reports", "Close Price")),
+                         ("qty", g_tr("Reports", "Qty")),
+                         ("corp_action", g_tr("Reports", "Note"))]
+        self._view = parent_view
+        self._timestamp_delegate = None
+        self._float_delegate = None
+        self._float2_delegate = None
+        self._float4_delegate = None
+        self._profit_delegate = None
+        self._ca_delegate = None
+        QSqlTableModel.__init__(self, parent=parent_view, db=db_connection())
+        self.setQuery(query)
+
+    def setColumnNames(self):
+        for column in self._columns:
+            self.setHeaderData(self.fieldIndex(column[0]), Qt.Horizontal, column[1])
+
+    def configureView(self):
+        self._view.setModel(self)
+        self.setColumnNames()
+        font = self._view.horizontalHeader().font()
+        font.setBold(True)
+        self._view.horizontalHeader().setFont(font)
+        self._view.setColumnWidth(self.fieldIndex("asset"), 300)
+        self._view.setColumnWidth(self.fieldIndex("corp_action"), 200)
+        self._view.setColumnWidth(self.fieldIndex("open_timestamp"),
+                                  self._view.fontMetrics().width("00/00/0000 00:00:00") * 1.1)
+        self._view.setColumnWidth(self.fieldIndex("close_timestamp"),
+                                  self._view.fontMetrics().width("00/00/0000 00:00:00") * 1.1)
+        self._timestamp_delegate = ReportsTimestampDelegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("open_timestamp"), self._timestamp_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("close_timestamp"), self._timestamp_delegate)
+        self._float_delegate = ReportsFloat2Delegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("qty"), self._float_delegate)
+        self._float2_delegate = ReportsFloat2Delegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("fee"), self._float2_delegate)
+        self._float4_delegate = ReportsFloat2Delegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("open_price"), self._float4_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("close_price"), self._float4_delegate)
+        self._profit_delegate = ReportsProfitDelegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("profit"), self._profit_delegate)
+        self._view.setItemDelegateForColumn(self.fieldIndex("rel_profit"), self._profit_delegate)
+        self._ca_delegate = ReportsCorpActionDelegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("corp_action"), self._ca_delegate)
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+class CategoryReportModel(QSqlTableModel):
+    def __init__(self, query, parent_view):
+        self._columns = [("timestamp", g_tr("Reports", "Timestamp")),
+                         ("account", g_tr("Reports", "Account")),
+                         ("name", g_tr("Reports", "Peer Name")),
+                         ("sum", g_tr("Reports", "Amount")),
+                         ("note", g_tr("Reports", "Note"))]
+        self._view = parent_view
+        self._timestamp_delegate = None
+        self._float_delegate = None
+        QSqlTableModel.__init__(self, parent=parent_view, db=db_connection())
+        self.setQuery(query)
+
+    def setColumnNames(self):
+        for column in self._columns:
+            self.setHeaderData(self.fieldIndex(column[0]), Qt.Horizontal, column[1])
+
+    def configureView(self):
+        self._view.setModel(self)
+        self.setColumnNames()
+        font = self._view.horizontalHeader().font()
+        font.setBold(True)
+        self._view.horizontalHeader().setFont(font)
+        self._view.horizontalHeader().setSectionResizeMode(self.fieldIndex("note"), QHeaderView.Stretch)
+        self._view.setColumnWidth(self.fieldIndex("account"), 200)
+        self._view.setColumnWidth(self.fieldIndex("name"), 200)
+        self._view.setColumnWidth(self.fieldIndex("sum"), 200)
+        self._view.setColumnWidth(self.fieldIndex("timestamp"),
+                                  self._view.fontMetrics().width("00/00/0000 00:00:00") * 1.1)
+        self._timestamp_delegate = ReportsTimestampDelegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("timestamp"), self._timestamp_delegate)
+        self._float_delegate = ReportsFloat2Delegate()
+        self._view.setItemDelegateForColumn(self.fieldIndex("sum"), self._float_delegate)
+
+
+#-----------------------------------------------------------------------------------------------------------------------
 PREPARE_REPORT_QUERY = 0
 SHOW_REPORT = 1
-REPORT_COLUMNS = 2
 
 class Reports(QObject):
     report_failure = Signal(str)
 
-    def __init__(self, db, report_table_view):
+    def __init__(self, report_table_view):
         super().__init__()
 
-        self.db = db
         self.table_view = report_table_view
         self.delegates = []
         self.current_report = None
@@ -80,48 +206,35 @@ class Reports(QObject):
 
         self.reports = {
             ReportType.IncomeSpending: (self.prepareIncomeSpendingReport,
-                                        self.showPandasReport,
-                                        []),
+                                        self.showPandasReport),
             ReportType.ProfitLoss: (self.prepareProfitLossReport,
-                                    self.showSqlQueryReport,
-                                    [("period", "Period", ColumnWidth.FOR_DATETIME, None, ReportsYearMonthDelegate),
-                                    ("transfer", "In / Out", None, None, ReportsFloat2Delegate),
-                                    ("assets", "Assets value", None, None, ReportsFloat2Delegate),
-                                    ("result", "Total result", None, None, ReportsFloat2Delegate),
-                                    ("profit", "Profit / Loss", None, None, ReportsProfitDelegate),
-                                    ("dividend", "Returns", None, None, ReportsFloat2Delegate),
-                                    ("tax_fee", "Taxes & Fees", None, None, ReportsFloat2Delegate)]),
+                                    self.showProfitLossReport),
             ReportType.Deals: (self.prepareDealsReport,
-                               self.showSqlQueryReport,
-                               [("asset", "Asset", 300, None, None),
-                               ("open_timestamp", "Open Date", ColumnWidth.FOR_DATETIME, None, ReportsTimestampDelegate),
-                               ("close_timestamp", "Close Date", ColumnWidth.FOR_DATETIME, None, ReportsTimestampDelegate),
-                               ("open_price", "Open Price", None, None, ReportsFloat4Delegate),
-                               ("close_price", "Close Price", None, None, ReportsFloat4Delegate),
-                               ("qty", "Qty", None, None, ReportsFloatDelegate),
-                               ("fee", "Fee", None, None, ReportsFloat2Delegate),
-                               ("profit", "P/L", None, None, ReportsProfitDelegate),
-                               ("rel_profit", "P/L, %", None, None, ReportsProfitDelegate),
-                               ("corp_action", "Note", 200, None, ReportsCorpActionDelegate)]),
+                               self.showDealsReport),
             ReportType.ByCategory: (self.prepareCategoryReport,
-                                    self.showSqlQueryReport,
-                                    [("timestamp", "Timestamp", ColumnWidth.FOR_DATETIME, None, ReportsTimestampDelegate),
-                                     ("account", "Account", 200, None, None),
-                                     ("name", "Peer Name", 200, None, None),
-                                     ("sum", "Amount", 200, None, ReportsFloat2Delegate),
-                                     ("note", "Note", -1, None, None)])
+                                    self.showByCategoryReport)
         }
 
     def runReport(self, report_type, begin=0, end=0, account_id=0, group_dates=0):
         if self.reports[report_type][PREPARE_REPORT_QUERY](begin, end, account_id, group_dates):
-            self.reports[report_type][SHOW_REPORT](report_type)
+            self.reports[report_type][SHOW_REPORT]()
 
-    def showSqlQueryReport(self, report_type):
-        self.model = UseSqlQuery(self, self.query, self.reports[report_type][REPORT_COLUMNS])
-        self.delegates = ConfigureTableView(self.table_view, self.model, self.reports[report_type][REPORT_COLUMNS])
+    def showProfitLossReport(self):
+        self.model = ProfitLossReportModel(self.query, self.table_view)
+        self.model.configureView()
         self.model.select()
 
-    def showPandasReport(self, report_type):
+    def showDealsReport(self):
+        self.model = DealsReportModel(self.query, self.table_view)
+        self.model.configureView()
+        self.model.select()
+
+    def showByCategoryReport(self):
+        self.model = CategoryReportModel(self.query, self.table_view)
+        self.model.configureView()
+        self.model.select()
+
+    def showPandasReport(self):
         self.model = PandasModel(self.dataframe)
         self.table_view.setModel(self.model)
         self.delegates = []
@@ -164,18 +277,17 @@ class Reports(QObject):
         report.save()
 
     def prepareIncomeSpendingReport(self, begin, end, account_id, group_dates):
-        _ = executeSQL(self.db, "DELETE FROM t_months")
-        _ = executeSQL(self.db, "DELETE FROM t_pivot")
-        _ = executeSQL(self.db,
-                       "INSERT INTO t_months (month, asset_id, last_timestamp) "
-                      "SELECT strftime('%s', datetime(timestamp, 'unixepoch', 'start of month') ) "
-                      "AS month, asset_id, MAX(timestamp) AS last_timestamp "
-                      "FROM quotes AS q "
-                      "LEFT JOIN assets AS a ON q.asset_id=a.id "
-                      "WHERE a.type_id=:asset_money "
-                      "GROUP BY month, asset_id",
+        _ = executeSQL("DELETE FROM t_months")
+        _ = executeSQL("DELETE FROM t_pivot")
+        _ = executeSQL("INSERT INTO t_months (month, asset_id, last_timestamp) "
+                       "SELECT strftime('%s', datetime(timestamp, 'unixepoch', 'start of month') ) "
+                       "AS month, asset_id, MAX(timestamp) AS last_timestamp "
+                       "FROM quotes AS q "
+                       "LEFT JOIN assets AS a ON q.asset_id=a.id "
+                       "WHERE a.type_id=:asset_money "
+                       "GROUP BY month, asset_id",
                        [(":asset_money", PredefinedAsset.Money)])
-        _ = executeSQL(self.db,
+        _ = executeSQL(
             "INSERT INTO t_pivot (row_key, col_key, value) "
             "SELECT strftime('%s', datetime(t.timestamp, 'unixepoch', 'start of month') ) AS row_key, "
             "t.category_id AS col_key, sum(-t.amount * coalesce(q.quote, 1)) AS value "
@@ -186,12 +298,10 @@ class Reports(QObject):
             "AND t.timestamp>=:begin AND t.timestamp<=:end "
             "GROUP BY row_key, col_key",
             [(":book_costs", BookAccount.Costs), (":book_incomes", BookAccount.Incomes),
-             (":begin", begin), (":end", end)])
-        self.db.commit()
-        self.query = executeSQL(self.db,
-                                "SELECT c.id AS id, c.level AS level, c.path AS category, "
+             (":begin", begin), (":end", end)], commit=True)
+        self.query = executeSQL("SELECT c.id AS id, c.level AS level, c.path AS category, "
                                 "strftime('%Y', datetime(p.row_key, 'unixepoch')) AS year, "
-                                "strftime('%m', datetime(p.row_key, 'unixepoch')) AS month, p.value AS value"
+                                "strftime('%m', datetime(p.row_key, 'unixepoch')) AS month, p.value AS value "
                                 "FROM categories_tree AS c "
                                 "LEFT JOIN t_pivot AS p ON p.col_key=c.id "
                                 "ORDER BY c.path, year, month")
@@ -241,7 +351,7 @@ class Reports(QObject):
             self.report_failure.emit(g_tr('Reports', "You should select account to create Deals report"))
             return False
         if group_dates == 1:
-            self.query = executeSQL(self.db,
+            self.query = executeSQL(
                                "SELECT asset, "
                                "strftime('%s', datetime(open_timestamp, 'unixepoch', 'start of day')) as open_timestamp, "
                                "strftime('%s', datetime(close_timestamp, 'unixepoch', 'start of day')) as close_timestamp, "
@@ -254,38 +364,37 @@ class Reports(QObject):
                                "ORDER BY close_timestamp, open_timestamp",
                                [(":account_id", account_id), (":begin", begin), (":end", end)], forward_only=False)
         else:
-            self.query = executeSQL(self.db, "SELECT asset, open_timestamp, close_timestamp, open_price, close_price, "
-                                        "qty, fee, profit, rel_profit, corp_action FROM deals_ext "
-                                        "WHERE account_id=:account_id AND close_timestamp>=:begin AND close_timestamp<=:end "
-                                        "ORDER BY close_timestamp, open_timestamp",
-                               [(":account_id", account_id), (":begin", begin), (":end", end)], forward_only=False)
+            self.query = executeSQL("SELECT asset, open_timestamp, close_timestamp, open_price, close_price, "
+                                    "qty, fee, profit, rel_profit, corp_action FROM deals_ext "
+                                    "WHERE account_id=:account_id AND close_timestamp>=:begin AND close_timestamp<=:end "
+                                    "ORDER BY close_timestamp, open_timestamp",
+                                    [(":account_id", account_id), (":begin", begin), (":end", end)], forward_only=False)
         return True
 
     def prepareProfitLossReport(self, begin, end, account_id, group_dates):
         if account_id == 0:
             self.report_failure.emit(g_tr('Reports', "You should select account to create Profit/Loss report"))
             return False
-        _ = executeSQL(self.db, "DELETE FROM t_months")
-        _ = executeSQL(self.db, "INSERT INTO t_months(asset_id, month, last_timestamp) "
-                                "SELECT DISTINCT(l.asset_id) AS asset_id, m.m_start, MAX(q.timestamp) AS last_timestamp "
-                                "FROM ledger AS l "
-                                "LEFT JOIN "
-                                "(WITH RECURSIVE months(m_start) AS "
-                                "( "
-                                "  VALUES(CAST(strftime('%s', date(:begin, 'unixepoch', 'start of month')) AS INTEGER)) "
-                                "  UNION ALL "
-                                "  SELECT CAST(strftime('%s', date(m_start, 'unixepoch', '+1 month')) AS INTEGER) "
-                                "  FROM months "
-                                "  WHERE m_start < :end "
-                                ") "
-                                "SELECT m_start FROM months) AS m "
-                                "LEFT JOIN quotes AS q ON q.timestamp<=m.m_start AND q.asset_id=l.asset_id "
-                                "WHERE l.timestamp>=:begin AND l.timestamp<=:end AND l.account_id=:account_id "
-                                "GROUP BY m.m_start, l.asset_id "
-                                "ORDER BY m.m_start, l.asset_id",
-                       [(":account_id", account_id), (":begin", begin), (":end", end)])
-        self.db.commit()
-        self.query = executeSQL(self.db,
+        _ = executeSQL("DELETE FROM t_months")
+        _ = executeSQL("INSERT INTO t_months(asset_id, month, last_timestamp) "
+                       "SELECT DISTINCT(l.asset_id) AS asset_id, m.m_start, MAX(q.timestamp) AS last_timestamp "
+                       "FROM ledger AS l "
+                       "LEFT JOIN "
+                       "(WITH RECURSIVE months(m_start) AS "
+                       "( "
+                       "  VALUES(CAST(strftime('%s', date(:begin, 'unixepoch', 'start of month')) AS INTEGER)) "
+                       "  UNION ALL "
+                       "  SELECT CAST(strftime('%s', date(m_start, 'unixepoch', '+1 month')) AS INTEGER) "
+                       "  FROM months "
+                       "  WHERE m_start < :end "
+                       ") "
+                       "SELECT m_start FROM months) AS m "
+                       "LEFT JOIN quotes AS q ON q.timestamp<=m.m_start AND q.asset_id=l.asset_id "
+                       "WHERE l.timestamp>=:begin AND l.timestamp<=:end AND l.account_id=:account_id "
+                       "GROUP BY m.m_start, l.asset_id "
+                       "ORDER BY m.m_start, l.asset_id",
+                       [(":account_id", account_id), (":begin", begin), (":end", end)], commit=True)
+        self.query = executeSQL(
             "SELECT DISTINCT(m.month) AS period, coalesce(t.transfer, 0) AS transfer, coalesce(a.assets, 0) AS assets, "
             "coalesce(p.result, 0) AS result, coalesce(o.profit, 0) AS profit, coalesce(d.dividend, 0) AS dividend, "
             "coalesce(f.tax_fee, 0) AS tax_fee "
@@ -347,12 +456,12 @@ class Reports(QObject):
         if category_id == 0:
             self.report_failure.emit(g_tr('Reports', "You should select category to create By Category report"))
             return False
-        self.query = executeSQL(self.db, "SELECT a.timestamp, ac.name AS account, p.name, d.sum, d.note "
-                                         "FROM actions AS a "
-                                         "LEFT JOIN action_details AS d ON d.pid=a.id "
-                                         "LEFT JOIN agents AS p ON p.id=a.peer_id "
-                                         "LEFT JOIN accounts AS ac ON ac.id=a.account_id "
-                                         "WHERE a.timestamp>=:begin AND a.timestamp<=:end "
-                                         "AND d.category_id=:category_id",
+        self.query = executeSQL("SELECT a.timestamp, ac.name AS account, p.name, d.sum, d.note "
+                                "FROM actions AS a "
+                                "LEFT JOIN action_details AS d ON d.pid=a.id "
+                                "LEFT JOIN agents AS p ON p.id=a.peer_id "
+                                "LEFT JOIN accounts AS ac ON ac.id=a.account_id "
+                                "WHERE a.timestamp>=:begin AND a.timestamp<=:end "
+                                "AND d.category_id=:category_id",
                                 [(":category_id", category_id), (":begin", begin), (":end", end)], forward_only=False)
         return True
