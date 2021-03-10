@@ -5,8 +5,8 @@ from PySide2.QtCore import QTranslator, QTimer
 from PySide2.QtWidgets import QApplication
 from PySide2.QtSql import QSql, QSqlDatabase, QSqlQuery
 from jal.widgets.main_window import MainWindow
-from jal.db.helpers import init_and_check_db, LedgerInitError, get_language, update_db_schema
-from jal.data_import.statements import executeSQL, readSQL, ReportType
+from jal.db.helpers import db_connection, executeSQL, readSQL, init_and_check_db, LedgerInitError, get_language, update_db_schema
+from jal.data_import.statements import ReportType
 
 REPORTDIR = "report"
 OUTDIR = "tax"
@@ -14,12 +14,11 @@ reportdir = os.path.join(os.getcwd(), REPORTDIR)
 outdir = os.path.join(os.getcwd(), OUTDIR)
 own_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "jal") + os.sep
 sqlfile = os.path.join(own_path, "jal.sqlite")
-#db:QSqlDatabase = None
 window:MainWindow = None
 
 
-def insertSql(db, sql_text, params = [], forward_only = True):
-    query = QSqlQuery(db)
+def insertSql(sql_text, params = [], forward_only = True):
+    query = QSqlQuery(db_connection())
     query.setForwardOnly(forward_only)
     if not query.prepare(sql_text):
         logging.error(f"SQL prep: '{query.lastError().text()}' for query '{sql_text}' with params '{params}'")
@@ -46,28 +45,28 @@ def addAllCurrencies():
     if "USD" in currencies: currencies.remove("USD")
     print(currencies)
     for currency in currencies:
-        insertSql(window.db, "INSERT INTO assets(name, type_id, full_name, src_id) VALUES(:name, 1, :name, 0)",
+        insertSql("INSERT INTO assets(name, type_id, full_name, src_id) VALUES(:name, 1, :name, 0)",
                   [(":name", currency)])
 
 def addAllBanks():
-    currency_query:QSqlQuery = executeSQL(window.db, "SELECT id,name FROM assets WHERE type_id=1")
+    currency_query:QSqlQuery = executeSQL("SELECT id,name FROM assets WHERE type_id=1")
     while currency_query.next():
         currency_id = currency_query.value(0)
         currency_name = currency_query.value(1)
-        insertSql(window.db, "INSERT INTO accounts(type_id, name, currency_id, active) VALUES(2,:name,:currency_id,1)",
+        insertSql("INSERT INTO accounts(type_id, name, currency_id, active) VALUES(2,:name,:currency_id,1)",
                   [(":name", "bank"+'-'+currency_name), (":currency_id", currency_id)])
 
 def addFFinBrokerOrganizationPeerAgent():
-    insertSql(window.db, "INSERT INTO agents(name) VALUES('Interactive Brokers')")  # 1
-    insertSql(window.db, "INSERT INTO agents(name) VALUES('Freedom Finance')")      # 2
+    insertSql("INSERT INTO agents(name) VALUES('Interactive Brokers')")  # 1
+    insertSql("INSERT INTO agents(name) VALUES('Freedom Finance')")      # 2
 
 def addBrokerAccount(name,account_num):
-    currency_query:QSqlQuery = executeSQL(window.db, "SELECT id,name FROM assets WHERE type_id=1")
+    currency_query:QSqlQuery = executeSQL("SELECT id,name FROM assets WHERE type_id=1")
     while currency_query.next():
         currency_id = currency_query.value(0)
         currency_name = currency_query.value(1)
         peer = '1' if name.startswith('ib') else '2'
-        insertSql(window.db, "INSERT INTO accounts(type_id, name, currency_id, active, number, organization_id) \
+        insertSql("INSERT INTO accounts(type_id, name, currency_id, active, number, organization_id) \
                                VALUES(4, :name, :currency_id, 1, :number, :peer)",
                   [(":name", name+'-'+currency_name), (":currency_id", currency_id), (":number", account_num), (":peer", peer)] )
 
@@ -99,8 +98,8 @@ def loadReports():
             window.statements.loaders[getLoaderType(broker)](fpath)
 
 def loadCurrencyRates():
-    timestamp_max = readSQL(window.db, "SELECT MAX(timestamp) FROM trades")
-    timestamp_min = readSQL(window.db, "SELECT MIN(timestamp) FROM trades")
+    timestamp_max = readSQL("SELECT MAX(timestamp) FROM trades")
+    timestamp_min = readSQL("SELECT MIN(timestamp) FROM trades")
     window.downloader.UpdateQuotes(timestamp_min, timestamp_max)
     window.onQuotesDownloadCompletion()  #self.download_completed.emit()
 
@@ -115,15 +114,15 @@ def mkOutDir():
 
 def saveTaxReports():
     mkOutDir()
-    accounts_query = executeSQL(window.db, "SELECT id,name,currency_id FROM accounts WHERE type_id=4")
+    accounts_query = executeSQL("SELECT id,name,currency_id FROM accounts WHERE type_id=4")
     while accounts_query.next():
         account_id = accounts_query.value(0)
         account_name = accounts_query.value(1)
         currency_id = accounts_query.value(2)
         #currency_name = readSQL("SELECT name FROM assets WHERE id=:id", [(":id",currency_id)])
         try:
-            timestamp_max = int(readSQL(window.db, "SELECT MAX(timestamp) FROM trades WHERE account_id=:id", [(":id",account_id)]))
-            timestamp_min = int(readSQL(window.db, "SELECT MIN(timestamp) FROM trades WHERE account_id=:id", [(":id",account_id)]))
+            timestamp_max = int(readSQL("SELECT MAX(timestamp) FROM trades WHERE account_id=:id", [(":id",account_id)]))
+            timestamp_min = int(readSQL("SELECT MIN(timestamp) FROM trades WHERE account_id=:id", [(":id",account_id)]))
         except: continue
         if timestamp_min==0 or timestamp_max==0: continue
         for year in range(datetime.fromtimestamp(timestamp_min).year, datetime.fromtimestamp(timestamp_max).year+1):
@@ -157,13 +156,13 @@ def main():
     clean()
 
     #own_path = os.path.dirname(os.path.realpath(__file__)) + os.sep
-    db, error = init_and_check_db(own_path)
+    error = init_and_check_db(own_path)
 
     if error.code == LedgerInitError.EmptyDbInitialized:  # If DB was just created from SQL - initialize it again
-        db, error = init_and_check_db(own_path)
+        error = init_and_check_db(own_path)
 
     app = QApplication([])
-    language = get_language(db)
+    language = get_language()
     translator = QTranslator(app)
     language_file = own_path + "languages" + os.sep + language + '.qm'
     translator.load(language_file)
@@ -175,10 +174,15 @@ def main():
             db, error = init_and_check_db(own_path)
 
     global window
-    if db is None:
-        window = AbortWindow(error)
+    if error.code != LedgerInitError.DbInitSuccess:
+        window = QMessageBox()
+        window.setAttribute(Qt.WA_DeleteOnClose)
+        window.setWindowTitle("JAL: Start-up aborted")
+        window.setIcon(QMessageBox.Critical)
+        window.setText(error.message)
+        window.setInformativeText(error.details)
     else:
-        window = MainWindow(db, own_path, language)
+        window = MainWindow(own_path, language)
         window.activateLoggingTab()
         QTimer.singleShot(0,doThings)
     window.show()

@@ -223,6 +223,10 @@ class FFin:
     DateTime = 'Время'
     Buy = 'Купля'
     Sell = 'Продажа'
+    CashDateTime = 'Дата'
+    CashIn = 'Приход'
+    CashOut = 'Расход'
+    CashDesc = 'Примечание'
 
 # -----------------------------------------------------------------------------------------------------------------------
 # Strip white spaces from numbers imported form Quik html-report. Strip new line symbols and tabulations.
@@ -251,7 +255,8 @@ def convert_ffin_date(val):
     logging.error(g_tr('StatementLoader', "Unsupported date/time format: ") + f"{val}")
     return None
 
-def addNewAsset(db, symbol, name, asset_type, isin, data_source=-1):
+
+def addNewAsset(symbol, name, asset_type, isin, data_source=-1):
     if symbol.endswith('.OLD'):
         symbol = symbol[:-len('.OLD')]
     _ = executeSQL("INSERT INTO assets(name, type_id, full_name, isin, src_id) "
@@ -1105,20 +1110,19 @@ class StatementLoader(QObject):
     #def getFFinAccount(self):
     #    bank_id = readSQL(self.db, "SELECT id FROM agents WHERE name='Freedom Finance'")
 
+    def loadFFinFee(self, fee):
+        bank_id = self.getAccountBank(fee['accountId'])
+        query = executeSQL("INSERT INTO actions (timestamp, account_id, peer_id) "
+                           "VALUES (:timestamp, :account_id, :bank_id)",
+                           [(":timestamp", fee['dateTime']), (":account_id", fee['accountId']), (":bank_id", bank_id)])
+        pid = query.lastInsertId()
+        _ = executeSQL("INSERT INTO action_details (pid, category_id, sum, note) "
+                       "VALUES (:pid, :category_id, :sum, :note)",
+                       [(":pid", pid), (":category_id", PredefinedCategory.Fees), (":sum", fee['amount']),
+                        (":note", fee['description'])], commit=True)
 
-    def loadFFinTrades(self, filename):
-        try:
-            data = pandas.read_excel(filename, sheet_name="trades", dtype={FFin.Account: str},
-                                     converters={FFin.DateTime: convert_ffin_date})
-                                         #converters={FFin.Qty: convert_amount, FFin.Price: convert_amount,
-                                          #           FFin.Fee: convert_amount, FFin.FeeEx: convert_amount,})
-            data = data.dropna()
-            #with pandas.option_context('display.max_rows', None, 'display.max_columns', None):
-            #    print(data)
-        except:
-            logging.error(g_tr('StatementLoader', "Can't read statement file: trades list"))
-            return False
 
+    def loadFFinTrades(self, data):
         for index, row in data.iterrows():
             try:
                 account_num = row[FFin.Account]
@@ -1138,7 +1142,7 @@ class StatementLoader(QObject):
             if asset_id is None:
                 asset_type = PredefinedAsset.Derivative if symbol.endswith("_FWD") else PredefinedAsset.Stock
                 try:
-                    asset_id = addNewAsset(self.db, symbol, row[FFin.Description], asset_type, None, data_source=-1)
+                    asset_id = addNewAsset(symbol, row[FFin.Description], asset_type, None, data_source=-1)
                 except:
                     logging.warning(g_tr('StatementLoader', "Unknown asset ") + f"'{symbol}'")
                     continue
@@ -1154,19 +1158,44 @@ class StatementLoader(QObject):
             self.createTrade(account_id, asset_id, timestamp, settlement, number, qty, price, -fee)
         return True
 
-    def loadFFinCash(self, filename):
-        try:
-            data = pandas.read_excel(filename, sheet_name="trades", dtype={FFin.Account: str},
-                                     converters={FFin.DateTime: convert_ffin_date})
-                                         #converters={FFin.Qty: convert_amount, FFin.Price: convert_amount,
-                                          #           FFin.Fee: convert_amount, FFin.FeeEx: convert_amount,})
-            data = data.dropna()
-            #with pandas.option_context('display.max_rows', None, 'display.max_columns', None):
-            #    print(data)
-        except:
-            logging.error(g_tr('StatementLoader', "Can't read statement file: trades list"))
-            return False
+    def loadFFinCashFee(self, timestamp, cash, desc):
+        pass
+
+    def loadFFinCash(self, data):
+        patterns = [('platform\s+fee',self.loadFFinCashFee)]
+        for index, row in data.iterrows():
+            try:
+                account_num = row[FFin.Account]
+            except KeyError:
+                logging.error(g_tr('StatementLoader', "Can't get account number from the statement."))
+                return False
+
+            account_id = self.findAccountID(account_num, "USD")
+            if account_id is None:
+                logging.error(g_tr('StatementLoader', "Account with number ") + f"{account_num}" +
+                              g_tr('StatementLoader', " not found. Import cancelled."))
+                return False
+
+            cash = float(row[FFin.CashIn]) if float(row[FFin.CashIn])==0 else float(row[FFin.CashOut])
+            desc = row[FFin.CashDesc]
+            timestamp = row[FFin.CashDateTime]
+
+            for pattern in patterns:
+                if re.match(pattern[0], desc):
+                    pass#pattern[1](timestamp, cash, desc)
+
+        return True
 
     def loadFFin(self, filename):
-        self.loadFFinCash(filename)
-        return self.loadFFinTrades(filename) and self.loadFFinCash(filename)
+        loaders = {'cash': self.loadFFinCash, 'trades': self.loadFFinTrades}
+        xl = pandas.ExcelFile(filename)
+        for sheet_name in xl.sheet_names:
+            if sheet_name in loaders:
+                try:
+                    data = xl.parse(sheet_name, dtype={FFin.Account: str}, converters={FFin.DateTime: convert_ffin_date})
+                    data = data.dropna()
+                    loaders[sheet_name](data)
+                except:
+                    logging.error(g_tr('StatementLoader', "Can't read statement " + sheet_name + " list: " + " from " + filename))
+            else:
+                logging.warning(g_tr('StatementLoader', "Unknown list name " + sheet_name + " in " + filename))
