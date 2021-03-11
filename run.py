@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 from jal.jal import main
 
 if __name__ == "__main__":
