@@ -43,6 +43,7 @@ def addAllCurrencies():
     if "EUR" in currencies: currencies.remove("EUR")
     if "RUB" in currencies: currencies.remove("RUB")
     if "USD" in currencies: currencies.remove("USD")
+    currencies.add("GBP")
     print(currencies)
     for currency in currencies:
         insertSql("INSERT INTO assets(name, type_id, full_name, src_id) VALUES(:name, 1, :name, 0)",
