@@ -172,7 +172,7 @@ def main():
     if error.code == LedgerInitError.OutdatedDbSchema:
         error = update_db_schema(own_path)
         if error.code == LedgerInitError.DbInitSuccess:
-            db, error = init_and_check_db(own_path)
+            error = init_and_check_db(own_path)
 
     global window
     if error.code != LedgerInitError.DbInitSuccess:

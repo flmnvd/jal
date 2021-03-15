@@ -985,7 +985,7 @@ class StatementLoader(QObject):
         account_id = dialog.account_id
         """
 
-        account_id = readSQL(self.db, 'SELECT id FROM accounts WHERE type_id=2 AND currency_id \
+        account_id = readSQL('SELECT id FROM accounts WHERE type_id=2 AND currency_id \
                                               IN(SELECT id FROM assets WHERE type_id=1 AND name=:curr_name)',
                                     [(":curr_name", cash['currency'])])
 
