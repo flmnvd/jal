@@ -1061,7 +1061,10 @@ class StatementIBKR(StatementXML):
                 else:
                     no_d_and_r = lambda x: {i: x[i] for i in x if i != 'description' and i != 'reported'}
                     m_payments = [x for x in payments if no_d_and_r(x) == no_d_and_r(t_payment)]
-                    if len(m_payments):
+                    # Description-less matching is unsafe when several taxes share the same
+                    # account/asset/date/amount tuple. In that case keep the reversal so we
+                    # don't silently drop an unrelated withholding record.
+                    if len(m_payments) == 1:
                         payments.remove(m_payments[0])
                     else:
                         not_matched_reversals.append(reversal)

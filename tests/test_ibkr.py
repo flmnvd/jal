@@ -455,3 +455,29 @@ def test_ibkr_mlp_extra_tax_reported_separately_is_saved_as_fee():
     assert len(extra_fees) == 1
     assert extra_fees[0]['amount'] == -0.53
     assert extra_fees[0]['description'].endswith(' - Extra 10% tax due to IRS section 1446')
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_ibkr_tax_aggregation_keeps_ambiguous_reversal_with_different_description():
+    ibkr = StatementIBKR()
+    ibkr._data = {
+        FOF.ASSET_PAYMENTS: [],
+        FOF.ASSETS: [{'id': 55, 'type': FOF.ASSET_STOCK}],
+    }
+
+    taxes = [
+        {'id': 1, 'type': 'Withholding Tax', 'source': 'CASH', 'account': 1, 'asset': 55, 'currency': 1,
+         'timestamp': d2t(260115), 'reported': d2t(260115), 'amount': -1.45,
+         'description': 'ACRE(US04013V1089) CASH DIVIDEND USD 0.25 PER SHARE - US TAX'},
+        {'id': 2, 'type': 'Withholding Tax', 'source': 'CASH', 'account': 1, 'asset': 55, 'currency': 1,
+         'timestamp': d2t(260115), 'reported': d2t(260115), 'amount': -1.45,
+         'description': 'ACRE(US04013V1089) CASH DIVIDEND USD 0.15 PER SHARE - US TAX'},
+        {'id': 3, 'type': 'Withholding Tax', 'source': 'CASH', 'account': 1, 'asset': 55, 'currency': 1,
+         'timestamp': d2t(260115), 'reported': d2t(260116), 'amount': 1.45,
+         'description': 'CANCEL ACRE(US04013V1089) CASH DIVIDEND USD 0.15 PER SHARE - CA TAX'},
+    ]
+
+    aggregated = ibkr.aggregate_taxes(taxes)
+
+    assert len(aggregated) == 3
+    assert sorted(tax['description'] for tax in aggregated) == sorted(tax['description'] for tax in taxes)
