@@ -1019,6 +1019,10 @@ class StatementIBKR(StatementXML):
     # Method takes a list of taxes and checks if we have the same amount added and deducted the same day
     # First it tries to find exact match. Second it does it again ignoring reportDate.
     def aggregate_taxes(self, taxes: list) -> list:
+        def tax_country(description: str) -> str:
+            match = re.search(r" - (?P<country>\w\w) TAX$", description, re.IGNORECASE)
+            return match.group('country').upper() if match else ''
+
         def is_mlp_extra_tax(tax: dict) -> bool:
             if tax['amount'] >= 0:
                 return False
@@ -1060,7 +1064,8 @@ class StatementIBKR(StatementXML):
                     payments.remove(m_payments[0])
                 else:
                     no_d_and_r = lambda x: {i: x[i] for i in x if i != 'description' and i != 'reported'}
-                    m_payments = [x for x in payments if no_d_and_r(x) == no_d_and_r(t_payment)]
+                    m_payments = [x for x in payments if no_d_and_r(x) == no_d_and_r(t_payment)
+                                  and tax_country(x['description']) == tax_country(t_payment['description'])]
                     # Description-less matching is unsafe when several taxes share the same
                     # account/asset/date/amount tuple. In that case keep the reversal so we
                     # don't silently drop an unrelated withholding record.

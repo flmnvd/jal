@@ -481,3 +481,27 @@ def test_ibkr_tax_aggregation_keeps_ambiguous_reversal_with_different_descriptio
 
     assert len(aggregated) == 3
     assert sorted(tax['description'] for tax in aggregated) == sorted(tax['description'] for tax in taxes)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+def test_ibkr_tax_aggregation_does_not_cancel_different_tax_country():
+    ibkr = StatementIBKR()
+    ibkr._data = {
+        FOF.ASSET_PAYMENTS: [],
+        FOF.ASSETS: [{'id': 55, 'type': FOF.ASSET_STOCK}],
+    }
+
+    taxes = [
+        {'id': 1, 'type': 'Withholding Tax', 'source': 'CASH', 'account': 1, 'asset': 55, 'currency': 1,
+         'timestamp': d2t(250415), 'reported': d2t(260115), 'amount': -0.87,
+         'description': 'ACRE(US04013V1089) CASH DIVIDEND USD 0.15 PER SHARE - US TAX'},
+        {'id': 2, 'type': 'Withholding Tax', 'source': 'CASH', 'account': 1, 'asset': 55, 'currency': 1,
+         'timestamp': d2t(250415), 'reported': d2t(260115), 'amount': 0.87,
+         'description': 'CANCEL ACRE(US04013V1089) CASH DIVIDEND USD 0.15 PER SHARE - CA TAX'},
+    ]
+
+    aggregated = ibkr.aggregate_taxes(taxes)
+
+    assert len(aggregated) == 2
+    assert sorted((tax['amount'], tax['description']) for tax in aggregated) == \
+        sorted((tax['amount'], tax['description']) for tax in taxes)
